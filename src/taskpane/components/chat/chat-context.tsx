@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { DirtyRange } from "../../../lib/dirty-tracker";
 import { getWorkbookMetadata, navigateTo } from "../../../lib/excel/api";
+import { loadOAuthCredentials, refreshOAuthToken, saveOAuthCredentials } from "../../../lib/oauth";
 import {
   type ChatSession,
   createSession,
@@ -388,6 +389,24 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const configRef = useRef<ProviderConfig | null>(null);
+
+  const getActiveApiKey = useCallback(async (config: ProviderConfig): Promise<string> => {
+    if (config.mode !== "byok" || config.authMethod !== "oauth") {
+      return apiKeyForConfig(config);
+    }
+
+    const creds = loadOAuthCredentials(config.provider);
+    if (!creds) return config.apiKey;
+    if (Date.now() < creds.expires) return creds.access;
+
+    console.log("[Chat] Refreshing OAuth token before API call...");
+    const refreshed = await refreshOAuthToken(config.provider, creds.refresh, config.proxyUrl, config.useProxy);
+    saveOAuthCredentials(config.provider, refreshed);
+    console.log("[Chat] OAuth token refreshed");
+    return refreshed.access;
+  }, []);
+
   const applyConfig = useCallback(
     (config: ProviderConfig) => {
       let contextWindow = 0;
@@ -403,6 +422,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      configRef.current = config;
       const proxiedModel = applyProxyToModel(baseModel, config);
       const existingMessages = agentRef.current?.state.messages ?? [];
 
@@ -418,10 +438,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           tools: EXCEL_TOOLS,
           messages: existingMessages,
         },
-        streamFn: (model, context, options) => {
+        streamFn: async (model, context, options) => {
+          const cfg = configRef.current ?? config;
+          const apiKey = await getActiveApiKey(cfg);
           return streamSimple(model, context, {
             ...options,
-            apiKey: apiKeyForConfig(config),
+            apiKey,
           });
         },
       });
@@ -446,7 +468,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         sessionStats: { ...prev.sessionStats, contextWindow },
       }));
     },
-    [handleAgentEvent],
+    [handleAgentEvent, getActiveApiKey],
   );
 
   const setProviderConfig = useCallback(

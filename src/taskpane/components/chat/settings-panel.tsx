@@ -531,7 +531,9 @@ function ByokSettingsPanel() {
               ))}
             </select>
             {discoverySource === "live" && (
-              <p className="text-[10px] text-(--chat-text-muted) mt-1">Models loaded live from the configured endpoint.</p>
+              <p className="text-[10px] text-(--chat-text-muted) mt-1">
+                Models loaded live from the configured endpoint.
+              </p>
             )}
           </label>
 
@@ -573,7 +575,9 @@ function ByokSettingsPanel() {
           {isConfigured ? (
             <>
               <Check size={12} className="text-(--chat-success)" />
-              <span className="text-(--chat-text-secondary)">Using {provider} / {model}</span>
+              <span className="text-(--chat-text-secondary)">
+                Using {provider} / {model}
+              </span>
             </>
           ) : (
             <span className="text-(--chat-text-muted)">Authenticate, connect, and select a model</span>
@@ -651,9 +655,7 @@ function GatewaySettingsPanel() {
 
   const activeConfig = state.providerConfig;
   const isConfigured =
-    activeConfig?.mode === "gateway" &&
-    activeConfig.gatewayUrl === gatewayUrl.trim() &&
-    activeConfig.model === model;
+    activeConfig?.mode === "gateway" && activeConfig.gatewayUrl === gatewayUrl.trim() && activeConfig.model === model;
   const connectLabel = models.length > 0 || discoverySource ? "Refresh Models" : "Connect";
 
   return (
