@@ -1,20 +1,15 @@
 import { Check, Eye, EyeOff, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useChat } from "./chat-context";
 import {
   APP_MODE,
   type ByokProviderConfig,
-  type GatewayProviderConfig,
-  type ProviderConfig,
-  type ThinkingLevel,
   loadSavedConfig,
+  type ProviderConfig,
   saveConfig,
+  type ThinkingLevel,
 } from "./config";
-import {
-  type DiscoveredModel,
-  discoverByokModels,
-  discoverGatewayModels,
-} from "./model-discovery";
-import { useChat } from "./chat-context";
+import { type DiscoveredModel, discoverByokModels, discoverGatewayModels } from "./model-discovery";
 
 const THINKING_LEVELS: { value: ThinkingLevel; label: string }[] = [
   { value: "none", label: "None" },
@@ -78,17 +73,7 @@ export function SettingsPanel() {
       saveConfig(config);
       setProviderConfig(config);
     }
-  }, [
-    provider,
-    apiKey,
-    gatewayUrl,
-    model,
-    useProxy,
-    proxyUrl,
-    thinking,
-    followMode,
-    setProviderConfig,
-  ]);
+  }, [provider, apiKey, gatewayUrl, model, useProxy, proxyUrl, thinking, followMode, setProviderConfig]);
 
   const invalidateDiscovery = () => {
     setModels([]);
@@ -160,7 +145,9 @@ export function SettingsPanel() {
   const activeConfig = state.providerConfig;
   const isConfigured =
     APP_MODE === "gateway"
-      ? activeConfig?.mode === "gateway" && activeConfig.gatewayUrl === gatewayUrl.trim() && activeConfig.model === model
+      ? activeConfig?.mode === "gateway" &&
+        activeConfig.gatewayUrl === gatewayUrl.trim() &&
+        activeConfig.model === model
       : activeConfig?.mode === "byok" &&
         activeConfig.provider === provider &&
         activeConfig.apiKey === apiKey &&
@@ -328,7 +315,9 @@ export function SettingsPanel() {
               ))}
             </select>
             {discoverySource === "live" && (
-              <p className="text-[10px] text-(--chat-text-muted) mt-1">Models loaded live from the configured endpoint.</p>
+              <p className="text-[10px] text-(--chat-text-muted) mt-1">
+                Models loaded live from the configured endpoint.
+              </p>
             )}
           </label>
 
@@ -417,8 +406,8 @@ export function SettingsPanel() {
         ) : (
           <>
             <p className="text-xs text-(--chat-text-secondary) leading-relaxed">
-              OpenExcel uses your existing provider credentials. Models are discovered after you connect instead of relying
-              only on the bundled model catalog.
+              OpenExcel uses your existing provider credentials. Models are discovered after you connect instead of
+              relying only on the bundled model catalog.
             </p>
             {useProxy && (
               <p className="text-xs text-(--chat-text-muted) leading-relaxed mt-2">

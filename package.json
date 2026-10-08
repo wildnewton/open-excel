@@ -12,7 +12,9 @@
     "dev_server_port": 3000
   },
   "scripts": {
-    "build": "webpack --mode production",
+    "build": "webpack --mode production --env openexcelMode=byok",
+    "build:byok": "webpack --mode production --env openexcelMode=byok",
+    "build:gateway": "webpack --mode production --env openexcelMode=gateway",
     "deploy": "pnpm build && pnpm dlx wrangler pages deploy dist --project-name openexcel",
     "build:dev": "webpack --mode development",
     "dev-server": "webpack serve --mode development",

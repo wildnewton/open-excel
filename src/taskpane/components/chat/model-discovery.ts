@@ -156,7 +156,7 @@ export async function discoverByokModels(config: ByokProviderConfig): Promise<Mo
 
   const baseUrl = trimTrailingSlash(template.baseUrl);
   let targetUrl = "";
-  let headers: Record<string, string> = { Accept: "application/json" };
+  const headers: Record<string, string> = { Accept: "application/json" };
   let parser: "google" | "openai" = "openai";
 
   if (config.provider === "google" && template.api === "google-generative-ai") {

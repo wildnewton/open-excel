@@ -16,6 +16,7 @@ async function getHttpsOptions() {
 
 module.exports = async (env, options) => {
   const dev = options.mode === "development";
+  const openExcelMode = env?.openexcelMode === "gateway" ? "gateway" : "byok";
   const config = {
     devtool: "source-map",
     entry: {
@@ -162,6 +163,7 @@ module.exports = async (env, options) => {
         "process.versions": "undefined",
         "process.browser": JSON.stringify(true),
         __APP_VERSION__: JSON.stringify(require("./package.json").version),
+        __OPENEXCEL_MODE__: JSON.stringify(openExcelMode),
       }),
     ],
     devServer: {

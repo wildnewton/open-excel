@@ -4,15 +4,7 @@ import {
   type AgentMessage,
   type ThinkingLevel as AgentThinkingLevel,
 } from "@mariozechner/pi-agent-core";
-import {
-  type AssistantMessage,
-  getModel,
-  getModels,
-  getProviders,
-  type Model,
-  streamSimple,
-  type Usage,
-} from "@mariozechner/pi-ai";
+import { type AssistantMessage, getProviders, type Model, streamSimple, type Usage } from "@mariozechner/pi-ai";
 import type { ReactNode } from "react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { DirtyRange } from "../../../lib/dirty-tracker";
@@ -28,6 +20,8 @@ import {
   saveSession,
 } from "../../../lib/storage";
 import { EXCEL_TOOLS } from "../../../lib/tools";
+import { isConfigReady, loadSavedConfig, type ProviderConfig, saveConfig, type ThinkingLevel } from "./config";
+import { apiKeyForConfig, resolveConfiguredModel } from "./model-discovery";
 
 export type ToolCallStatus = "pending" | "running" | "complete" | "error";
 
@@ -50,18 +44,6 @@ export interface ChatMessage {
   timestamp: number;
 }
 
-export type ThinkingLevel = "none" | "low" | "medium" | "high";
-
-export interface ProviderConfig {
-  provider: string;
-  apiKey: string;
-  model: string;
-  useProxy: boolean;
-  proxyUrl: string;
-  thinking: ThinkingLevel;
-  followMode: boolean;
-}
-
 export interface SessionStats {
   inputTokens: number;
   outputTokens: number;
@@ -70,25 +52,6 @@ export interface SessionStats {
   totalCost: number;
   contextWindow: number;
   lastUsage: Usage | null;
-}
-
-const STORAGE_KEY = "openexcel-provider-config";
-
-function loadSavedConfig(): ProviderConfig | null {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const config = JSON.parse(saved);
-      if (config.proxyUrl === undefined) {
-        config.proxyUrl = "";
-      }
-      if (config.followMode === undefined) {
-        config.followMode = true; // Default to on
-      }
-      return config;
-    }
-  } catch {}
-  return null;
 }
 
 function parseDirtyRanges(result: string | undefined): DirtyRange[] | null {
@@ -105,7 +68,7 @@ function parseDirtyRanges(result: string | undefined): DirtyRange[] | null {
 }
 
 function applyProxyToModel(model: Model<any>, config: ProviderConfig): Model<any> {
-  if (!config.useProxy || !config.proxyUrl || !model.baseUrl) return model;
+  if (config.mode !== "byok" || !config.useProxy || !config.proxyUrl || !model.baseUrl) return model;
   return {
     ...model,
     baseUrl: `${config.proxyUrl}/?url=${encodeURIComponent(model.baseUrl)}`,
@@ -140,7 +103,6 @@ interface ChatContextValue {
   clearMessages: () => void;
   abort: () => void;
   availableProviders: string[];
-  getModelsForProvider: (provider: string) => Model<any>[];
   newSession: () => Promise<void>;
   switchSession: (sessionId: string) => Promise<void>;
   deleteCurrentSession: () => Promise<void>;
@@ -216,7 +178,7 @@ function extractPartsFromAssistantMessage(message: AgentMessage, existingParts: 
 export function ChatProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<ChatState>(() => {
     const saved = loadSavedConfig();
-    const validConfig = saved?.provider && saved?.apiKey && saved?.model ? saved : null;
+    const validConfig = isConfigReady(saved) ? saved : null;
     return {
       messages: [],
       isStreaming: false,
@@ -239,14 +201,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const followModeRef = useRef(state.providerConfig?.followMode ?? true);
 
   const availableProviders = getProviders();
-
-  const getModelsForProvider = useCallback((provider: string): Model<any>[] => {
-    try {
-      return getModels(provider as any);
-    } catch {
-      return [];
-    }
-  }, []);
 
   const handleAgentEvent = useCallback((event: AgentEvent) => {
     console.log("[Chat] Agent event:", event.type, event);
@@ -439,9 +393,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       let contextWindow = 0;
       let baseModel: Model<any>;
       try {
-        baseModel = getModel(config.provider as any, config.model as any);
+        baseModel = resolveConfiguredModel(config);
         contextWindow = baseModel.contextWindow;
-      } catch {
+      } catch (err) {
+        setState((prev) => ({
+          ...prev,
+          error: err instanceof Error ? err.message : "Unable to configure the selected model",
+        }));
         return;
       }
 
@@ -463,7 +421,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         streamFn: (model, context, options) => {
           return streamSimple(model, context, {
             ...options,
-            apiKey: config.apiKey,
+            apiKey: apiKeyForConfig(config),
           });
         },
       });
@@ -516,7 +474,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       const agent = agentRef.current;
       if (!agent || !state.providerConfig) {
-        setState((prev) => ({ ...prev, error: "Please configure your API key first" }));
+        setState((prev) => ({ ...prev, error: "Please configure a model first" }));
         return;
       }
 
@@ -712,7 +670,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const saved = loadSavedConfig();
-    if (saved?.provider && saved?.apiKey && saved?.model) {
+    if (isConfigReady(saved)) {
       setProviderConfig(saved);
     }
   }, [setProviderConfig]);
@@ -728,7 +686,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const newFollowMode = !prev.providerConfig.followMode;
       followModeRef.current = newFollowMode;
       const newConfig = { ...prev.providerConfig, followMode: newFollowMode };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(newConfig));
+      saveConfig(newConfig);
       return { ...prev, providerConfig: newConfig };
     });
   }, []);
@@ -742,7 +700,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         clearMessages,
         abort,
         availableProviders,
-        getModelsForProvider,
         newSession,
         switchSession,
         deleteCurrentSession,
