@@ -1,0 +1,58 @@
+name: Implement live models and gateway mode
+
+on:
+  push:
+    branches:
+      - feature/live-models-gateway-mode
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Apply feature patch
+        run: |
+          python scripts/apply-live-models-gateway.py
+          rm scripts/apply-live-models-gateway.py
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Format and organize imports
+        run: pnpm lint:fix
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build BYOK mode
+        run: pnpm build:byok
+
+      - name: Build Gateway mode
+        run: pnpm build:gateway
+
+      - name: Commit validated implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Implement live model discovery and gateway mode"
+          git push origin HEAD:feature/live-models-gateway-mode
