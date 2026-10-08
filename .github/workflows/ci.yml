@@ -32,5 +32,8 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Build
-        run: pnpm build
+      - name: Build BYOK mode
+        run: pnpm build:byok
+
+      - name: Build Gateway mode
+        run: pnpm build:gateway
