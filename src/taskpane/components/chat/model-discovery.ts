@@ -19,6 +19,21 @@ type JsonRecord = Record<string, unknown>;
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const GATEWAY_COMPAT_API_KEY = "openexcel-gateway-no-auth";
 
+const DEFAULT_API_PREFERENCE = [
+  "openai-responses",
+  "openai-completions",
+  "anthropic-messages",
+  "google-generative-ai",
+  "mistral-conversations",
+];
+
+const PROVIDER_API_PREFERENCE: Record<string, string[]> = {
+  openai: ["openai-responses", "openai-completions"],
+  anthropic: ["anthropic-messages"],
+  google: ["google-generative-ai"],
+  mistral: ["mistral-conversations", "openai-completions"],
+};
+
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
 }
@@ -44,10 +59,22 @@ function builtInModels(provider: string): Model<any>[] {
 
 function builtInModel(provider: string, modelId: string): Model<any> | null {
   try {
-    return getModel(provider as never, modelId as never) as Model<any>;
+    return (getModel(provider as never, modelId as never) as Model<any>) ?? null;
   } catch {
     return null;
   }
+}
+
+function providerTemplate(provider: string): Model<any> | null {
+  const models = builtInModels(provider);
+  const preferredApis = PROVIDER_API_PREFERENCE[provider] ?? DEFAULT_API_PREFERENCE;
+
+  for (const api of preferredApis) {
+    const match = models.find((model) => model.api === api);
+    if (match) return match;
+  }
+
+  return models[0] ?? null;
 }
 
 function fallbackModels(provider: string): ModelDiscoveryResult {
@@ -151,7 +178,7 @@ async function fetchJson(url: string, headers: Record<string, string>): Promise<
 }
 
 export async function discoverByokModels(config: ByokProviderConfig): Promise<ModelDiscoveryResult> {
-  const template = builtInModels(config.provider)[0];
+  const template = providerTemplate(config.provider);
   if (!template?.baseUrl) return fallbackModels(config.provider);
 
   const baseUrl = trimTrailingSlash(template.baseUrl);
@@ -203,7 +230,7 @@ export async function discoverGatewayModels(gatewayUrl: string): Promise<ModelDi
 }
 
 function createUnknownByokModel(config: ByokProviderConfig): Model<any> {
-  const template = builtInModels(config.provider)[0];
+  const template = providerTemplate(config.provider);
   if (!template) throw new Error(`No model template is available for provider ${config.provider}.`);
 
   return {
