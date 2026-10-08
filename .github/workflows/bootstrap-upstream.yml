@@ -20,11 +20,11 @@ jobs:
       - name: Clone upstream
         run: git clone --depth 1 https://github.com/rcdexta/open-excel.git /tmp/open-excel-upstream
 
-      - name: Mirror upstream working tree
+      - name: Mirror upstream working tree except workflows
         run: |
           rsync -a --delete \
             --exclude='.git/' \
-            --exclude='.github/workflows/bootstrap-upstream.yml' \
+            --exclude='.github/workflows/' \
             /tmp/open-excel-upstream/ ./
 
       - name: Commit mirror
@@ -36,5 +36,5 @@ jobs:
             echo "No changes to mirror"
             exit 0
           fi
-          git commit -m "Mirror rcdexta/open-excel main"
+          git commit -m "Mirror rcdexta/open-excel main (excluding workflows)"
           git push origin HEAD:main
