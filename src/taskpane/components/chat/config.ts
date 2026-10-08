@@ -1,3 +1,5 @@
+import { loadOAuthCredentials } from "../../../lib/oauth";
+
 export type ThinkingLevel = "none" | "low" | "medium" | "high";
 
 export interface ByokProviderConfig {
@@ -9,6 +11,7 @@ export interface ByokProviderConfig {
   proxyUrl: string;
   thinking: ThinkingLevel;
   followMode: boolean;
+  authMethod?: "apikey" | "oauth";
 }
 
 export interface GatewayProviderConfig {
@@ -48,15 +51,24 @@ export function loadSavedConfig(): ProviderConfig | null {
       };
     }
 
+    const provider = typeof parsed.provider === "string" ? parsed.provider : "";
+    const authMethod = parsed.authMethod === "oauth" ? "oauth" : "apikey";
+    let apiKey = typeof parsed.apiKey === "string" ? parsed.apiKey : "";
+    if (authMethod === "oauth" && provider) {
+      const creds = loadOAuthCredentials(provider);
+      if (creds) apiKey = creds.access;
+    }
+
     return {
       mode: "byok",
-      provider: typeof parsed.provider === "string" ? parsed.provider : "",
-      apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
+      provider,
+      apiKey,
       model: typeof parsed.model === "string" ? parsed.model : "",
       useProxy: parsed.useProxy !== false,
       proxyUrl: typeof parsed.proxyUrl === "string" ? parsed.proxyUrl : "",
       thinking: parseThinkingLevel(parsed.thinking),
       followMode: typeof parsed.followMode === "boolean" ? parsed.followMode : true,
+      authMethod,
     };
   } catch {
     return null;
