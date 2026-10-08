@@ -1,0 +1,40 @@
+name: Bootstrap upstream mirror
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout destination
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clone upstream
+        run: git clone --depth 1 https://github.com/rcdexta/open-excel.git /tmp/open-excel-upstream
+
+      - name: Mirror upstream working tree
+        run: |
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='.github/workflows/bootstrap-upstream.yml' \
+            /tmp/open-excel-upstream/ ./
+
+      - name: Commit mirror
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to mirror"
+            exit 0
+          fi
+          git commit -m "Mirror rcdexta/open-excel main"
+          git push origin HEAD:main
