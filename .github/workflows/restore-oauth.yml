@@ -49,19 +49,17 @@ jobs:
             "google-antigravity",
           ]);
 
-          function getCredentialCopy(provider: string): { label: string; placeholder: string; hint?: string } {
+          function getCredentialCopy(provider: string): { label: string; placeholder: string } {
             if (provider === "anthropic") {
               return {
                 label: "API Key / Claude OAuth Token",
                 placeholder: "sk-ant-... or sk-ant-oat...",
-                hint: "Claude Pro/Max OAuth tokens remain supported alongside Anthropic API keys.",
               };
             }
             if (OAUTH_ONLY_PROVIDERS.has(provider)) {
               return {
                 label: "OAuth Token",
                 placeholder: "Paste the OAuth credential for this provider",
-                hint: "This provider uses the existing pi-ai OAuth credential path.",
               };
             }
             return { label: "API Key / Token", placeholder: "Enter your credential" };
@@ -79,49 +77,37 @@ jobs:
             raise SystemExit('connectLabel marker not found')
           text = text.replace(marker, replacement, 1)
 
-          text = text.replace(
-              '<span className="block text-xs text-(--chat-text-secondary) mb-1.5">API Key / Token</span>',
-              '<span className="block text-xs text-(--chat-text-secondary) mb-1.5">{credentialCopy.label}</span>',
-              1,
-          )
+          old = '<span className="block text-xs text-(--chat-text-secondary) mb-1.5">API Key / Token</span>'
+          new = '<span className="block text-xs text-(--chat-text-secondary) mb-1.5">{credentialCopy.label}</span>'
+          if old not in text:
+            raise SystemExit('credential label marker not found')
+          text = text.replace(old, new, 1)
+
+          if 'placeholder="Enter your credential"' not in text:
+            raise SystemExit('credential placeholder marker not found')
           text = text.replace('placeholder="Enter your credential"', 'placeholder={credentialCopy.placeholder}', 1)
 
-          marker = '''                  </button>
-                </div>
-              </label>
-
-              <div className="flex items-center justify-between">'''
-          replacement = '''                  </button>
-                </div>
-                {credentialCopy.hint && (
-                  <p className="text-[10px] text-(--chat-text-muted) mt-1">{credentialCopy.hint}</p>
-                )}
-              </label>
-
-              <div className="flex items-center justify-between">'''
-          if marker not in text:
-            raise SystemExit('credential input marker not found')
-          text = text.replace(marker, replacement, 1)
-
+          if 'Required for Anthropic and some providers' not in text:
+            raise SystemExit('proxy helper marker not found')
           text = text.replace(
               'Required for Anthropic and some providers',
               'Required for Claude OAuth and some providers',
               1,
           )
-          text = text.replace(
-              'CORS Proxy: Requests route through your proxy to bypass browser CORS restrictions.',
-              'CORS Proxy: Requests route through your proxy to bypass browser CORS restrictions. Required for Claude OAuth and Z.ai.',
-              1,
-          )
+
+          old = 'CORS Proxy: Requests route through your proxy to bypass browser CORS restrictions.'
+          new = 'CORS Proxy: Requests route through your proxy to bypass browser CORS restrictions. Required for Claude OAuth and Z.ai.'
+          if old not in text:
+            raise SystemExit('about proxy marker not found')
+          text = text.replace(old, new, 1)
           path.write_text(text)
 
           readme = Path('README.md')
           r = readme.read_text()
-          r = r.replace(
-              '2. **API Key / Token** - Use the provider credential supported by the existing integration.',
-              '2. **Credential** - Use the provider credential supported by the existing integration. Existing OAuth credential paths remain supported; for example, Anthropic accepts Claude OAuth tokens as well as API keys.',
-              1,
-          )
+          old = '2. **API Key / Token** - Use the provider credential supported by the existing integration.'
+          new = '2. **Credential** - Use the provider credential supported by the existing integration. Existing OAuth credential paths remain supported; for example, Anthropic accepts Claude OAuth tokens as well as API keys.'
+          if old in r:
+            r = r.replace(old, new, 1)
           readme.write_text(r)
           PY
 
