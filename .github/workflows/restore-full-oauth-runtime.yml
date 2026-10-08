@@ -65,6 +65,14 @@ jobs:
           text = text.replace(old, new, 1)
 
           path.write_text(text)
+
+          oauth_path = Path('src/lib/oauth/index.ts')
+          oauth = oauth_path.read_text()
+          old_loop = '''  for (const byte of bytes) {\n    binary += String.fromCharCode(byte);\n  }'''
+          new_loop = '''  for (let i = 0; i < bytes.length; i++) {\n    binary += String.fromCharCode(bytes[i]);\n  }'''
+          if old_loop not in oauth:
+              raise SystemExit('OAuth byte loop marker not found')
+          oauth_path.write_text(oauth.replace(old_loop, new_loop, 1))
           PY
 
       - name: Install dependencies
