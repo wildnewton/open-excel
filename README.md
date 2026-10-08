@@ -1,6 +1,6 @@
 # open-excel
 
-An open-source Claude for Excel clone. A Microsoft Office Excel Add-in with an integrated AI chat interface that lets you chat with LLM providers (OpenAI, Anthropic, Google, etc.) directly within Excel using your own API keys (BYOK).
+An open-source Claude for Excel clone. A Microsoft Office Excel Add-in with an integrated AI chat interface. This fork supports both the original bring-your-own-key (BYOK) workflow and a managed OpenAI-compatible gateway workflow.
 
 https://github.com/user-attachments/assets/50f3ba42-4daa-49d8-b31e-bae9be6e225b
 
@@ -74,9 +74,27 @@ Excel will launch automatically with the add-in loaded in the taskpane.
 pnpm stop
 ```
 
+### Production Builds
+
+The default production build remains the BYOK build:
+
+```bash
+pnpm build
+# equivalent to:
+pnpm build:byok
+```
+
+Build the managed enterprise gateway variant with:
+
+```bash
+pnpm build:gateway
+```
+
+Both variants use the same source tree. The build mode is injected at compile time so a gateway build does not expose the BYOK provider/API-key setup UI.
+
 ### Deploy to Production
 
-Builds and deploys to Cloudflare Pages:
+The existing deploy command builds the default BYOK variant and deploys it to Cloudflare Pages:
 
 ```bash
 pnpm deploy
@@ -87,8 +105,10 @@ pnpm deploy
 | Command | Description |
 |---------|-------------|
 | `pnpm dev-server` | Start dev server only (https://localhost:3000) |
-| `pnpm build` | Production build |
-| `pnpm deploy` | Build and deploy to Cloudflare Pages |
+| `pnpm build` | Production BYOK build |
+| `pnpm build:byok` | Explicit BYOK production build |
+| `pnpm build:gateway` | Managed gateway production build |
+| `pnpm deploy` | Build the BYOK variant and deploy to Cloudflare Pages |
 | `pnpm lint` | Run linter |
 | `pnpm typecheck` | TypeScript type checking |
 | `pnpm validate` | Validate the Office manifest |
@@ -130,13 +150,41 @@ These are not implemented for obvious reasons. I guess we can do it as BYOK w/ s
 
 ## Configuration
 
-On first use, open the Settings tab in the add-in to configure:
+### BYOK build
 
-1. **Provider** - Select your LLM provider (OpenAI, Anthropic, Google, etc.)
-2. **API Key** - Enter your API key for the selected provider
-3. **Model** - Choose the model to use
+Open the Settings tab and configure:
 
-Settings are stored locally in the webview sidecar's localStorage.
+1. **Provider** - Select the existing LLM provider.
+2. **API Key / Token** - Use the provider credential supported by the existing integration.
+3. **Connect / Refresh Models** - Explicitly query the provider for its current models when a compatible model-list API is available.
+4. **Model** - Choose a model returned by live discovery.
+
+Live discovery is preferred over the bundled `pi-ai` catalog. OpenExcel only removes models that can be clearly identified as non-chat models (for example embedding, moderation, transcription, TTS, or image-generation models). Unknown/new chat models remain visible. Providers that cannot be enumerated through a compatible endpoint fall back to the bundled catalog and expose a manual model-ID field.
+
+Existing provider authentication behavior is otherwise unchanged.
+
+### Managed gateway build
+
+The gateway build removes provider selection, provider credentials, and provider proxy configuration from the add-in. The Settings tab contains:
+
+1. **Gateway URL** - User-editable OpenAI-compatible gateway endpoint.
+2. **Connect / Refresh Models** - Calls the gateway model endpoint.
+3. **Model** - Shows the real model names returned by the gateway.
+
+If the configured URL does not end in `/v1`, OpenExcel appends it automatically. The gateway is expected to support:
+
+```text
+GET  /v1/models
+POST /v1/chat/completions
+```
+
+`/v1/chat/completions` must support streaming and OpenAI-compatible tool/function calling so the existing Excel agent loop can continue executing spreadsheet tools.
+
+The gateway build does not ask the user for a provider API key. Provider selection, upstream credentials, routing, user authorization, quotas, and the model catalog are gateway responsibilities.
+
+### Persistence
+
+BYOK and gateway settings use separate localStorage entries. A previously selected model/configuration is restored when Excel reopens. Model discovery is never triggered automatically on startup; the user explicitly chooses **Connect / Refresh Models** when they want to refresh the catalog.
 
 ## License
 
