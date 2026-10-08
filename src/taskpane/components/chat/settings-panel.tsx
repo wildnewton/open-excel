@@ -18,6 +18,24 @@ const THINKING_LEVELS: { value: ThinkingLevel; label: string }[] = [
   { value: "high", label: "High" },
 ];
 
+const OAUTH_ONLY_PROVIDERS = new Set(["openai-codex", "github-copilot", "google-gemini-cli", "google-antigravity"]);
+
+function getCredentialCopy(provider: string): { label: string; placeholder: string } {
+  if (provider === "anthropic") {
+    return {
+      label: "API Key / Claude OAuth Token",
+      placeholder: "sk-ant-... or sk-ant-oat...",
+    };
+  }
+  if (OAUTH_ONLY_PROVIDERS.has(provider)) {
+    return {
+      label: "OAuth Token",
+      placeholder: "Paste the OAuth credential for this provider",
+    };
+  }
+  return { label: "API Key / Token", placeholder: "Enter your credential" };
+}
+
 export function SettingsPanel() {
   const { state, setProviderConfig, availableProviders } = useChat();
   const [saved] = useState(loadSavedConfig);
@@ -161,6 +179,7 @@ export function SettingsPanel() {
   };
 
   const connectLabel = models.length > 0 || discoverySource ? "Refresh Models" : "Connect";
+  const credentialCopy = getCredentialCopy(provider);
 
   return (
     <div className="flex-1 overflow-y-auto p-4 space-y-6" style={{ fontFamily: "var(--chat-font-mono)" }}>
@@ -210,13 +229,13 @@ export function SettingsPanel() {
               </label>
 
               <label className="block">
-                <span className="block text-xs text-(--chat-text-secondary) mb-1.5">API Key / Token</span>
+                <span className="block text-xs text-(--chat-text-secondary) mb-1.5">{credentialCopy.label}</span>
                 <div className="relative">
                   <input
                     type={showKey ? "text" : "password"}
                     value={apiKey}
                     onChange={(e) => handleApiKeyChange(e.target.value)}
-                    placeholder="Enter your credential"
+                    placeholder={credentialCopy.placeholder}
                     className="w-full bg-(--chat-input-bg) text-(--chat-text-primary)
                                text-sm px-3 py-2 pr-10 border border-(--chat-border)
                                placeholder:text-(--chat-text-muted)
@@ -238,7 +257,7 @@ export function SettingsPanel() {
                 <div>
                   <span className="text-xs text-(--chat-text-secondary)">CORS Proxy</span>
                   <p className="text-[10px] text-(--chat-text-muted) mt-0.5">
-                    Required for Anthropic and some providers
+                    Required for Claude OAuth and some providers
                   </p>
                 </div>
                 <button
@@ -411,7 +430,8 @@ export function SettingsPanel() {
             </p>
             {useProxy && (
               <p className="text-xs text-(--chat-text-muted) leading-relaxed mt-2">
-                CORS Proxy: Requests route through your proxy to bypass browser CORS restrictions.
+                CORS Proxy: Requests route through your proxy to bypass browser CORS restrictions. Required for Claude
+                OAuth and Z.ai.
               </p>
             )}
           </>

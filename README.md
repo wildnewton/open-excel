@@ -155,7 +155,7 @@ These are not implemented for obvious reasons. I guess we can do it as BYOK w/ s
 Open the Settings tab and configure:
 
 1. **Provider** - Select the existing LLM provider.
-2. **API Key / Token** - Use the provider credential supported by the existing integration.
+2. **Credential** - Use the provider credential supported by the existing integration. Existing OAuth credential paths remain supported; for example, Anthropic accepts Claude OAuth tokens as well as API keys.
 3. **Connect / Refresh Models** - Explicitly query the provider for its current models when a compatible model-list API is available.
 4. **Model** - Choose a model returned by live discovery.
 
