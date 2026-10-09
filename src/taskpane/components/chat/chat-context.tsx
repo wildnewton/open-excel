@@ -13,11 +13,10 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import type { ReactNode } from "react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { buildCorsProxyUrl, createCorsProxyFetch } from "../../../lib/cors-proxy";
+import { createCorsProxyFetch } from "../../../lib/cors-proxy";
 import type { DirtyRange } from "../../../lib/dirty-tracker";
 import { getWorkbookMetadata, navigateTo } from "../../../lib/excel/api";
 import { loadOAuthCredentials, refreshOAuthToken, saveOAuthCredentials } from "../../../lib/oauth";
-import { createResponseStartTimeoutFetch } from "../../../lib/request-timeout";
 import {
   type ChatSession,
   createSession,
@@ -74,16 +73,6 @@ function parseDirtyRanges(result: string | undefined): DirtyRange[] | null {
     // Not valid JSON or no dirty ranges
   }
   return null;
-}
-
-function applyProxyToModel(model: Model<any>, config: ProviderConfig): Model<any> {
-  // Custom Endpoint must keep its real base URL so the provider SDK can append
-  // /chat/completions, /responses, etc. first. Its final URL is proxied in fetch.
-  if (config.mode !== "byok" || config.provider === "custom" || !model.baseUrl) return model;
-  return {
-    ...model,
-    baseUrl: buildCorsProxyUrl(model.baseUrl, config),
-  };
 }
 
 interface ChatState {
@@ -238,8 +227,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       case "message_update": {
         const messageId = streamingMessageIdRef.current;
         if (event.message.role === "assistant" && messageId) {
-          // Capture the id before scheduling the React state update. Fast streams can
-          // batch multiple updates with message_end, which clears the mutable ref.
           setState((prev) => {
             const messages = [...prev.messages];
             const idx = messages.findIndex((m) => m.id === messageId);
@@ -263,15 +250,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
           setState((prev) => {
             const messages = [...prev.messages];
-            // Use the id captured before the ref is cleared below. This also makes
-            // the final complete message a reliable fallback if intermediate updates
-            // were React-batched.
             const idx = messageId ? messages.findIndex((m) => m.id === messageId) : -1;
 
             if (isError) {
-              if (idx !== -1) {
-                messages.splice(idx, 1);
-              }
+              if (idx !== -1) messages.splice(idx, 1);
             } else if (idx !== -1) {
               const parts = extractPartsFromAssistantMessage(event.message, messages[idx].parts);
               messages[idx] = { ...messages[idx], parts };
@@ -371,7 +353,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 console.error("[FollowMode] Navigation failed:", err);
               });
             } else if (first.sheetId >= 0) {
-              // For whole-sheet changes, just activate the sheet
               navigateTo(first.sheetId).catch((err) => {
                 console.error("[FollowMode] Navigation failed:", err);
               });
@@ -415,7 +396,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
 
     const creds = loadOAuthCredentials(config.provider);
-    if (!creds) return config.apiKey;
+    if (!creds) {
+      throw new Error("OAuth session is no longer available. Please sign in again.");
+    }
     if (Date.now() < creds.expires) return creds.access;
 
     console.log("[Chat] Refreshing OAuth token before API call...");
@@ -441,7 +424,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       configRef.current = config;
-      const proxiedModel = applyProxyToModel(baseModel, config);
       const existingMessages = agentRef.current?.state.messages ?? [];
 
       if (agentRef.current) {
@@ -450,7 +432,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       const agent = new Agent({
         initialState: {
-          model: proxiedModel,
+          model: baseModel,
           systemPrompt: SYSTEM_PROMPT,
           thinkingLevel: thinkingLevelToAgent(config.thinking),
           tools: EXCEL_TOOLS,
@@ -458,32 +440,40 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         },
         streamFn: async (model, context, options) => {
           const cfg = configRef.current ?? config;
+          const isCustomEndpoint = cfg.mode === "byok" && cfg.provider === "custom";
+          const customWithoutAuth = isCustomEndpoint && !cfg.apiKey.trim();
+          const omitAuthentication = cfg.mode === "gateway" || customWithoutAuth;
           let apiKey = await getActiveApiKey(cfg);
+
+          if (customWithoutAuth) {
+            apiKey = "openexcel-custom-no-auth";
+          }
+
+          const proxyOptions =
+            cfg.mode === "byok"
+              ? cfg
+              : {
+                  useProxy: false,
+                  proxyUrl: "",
+                  responseStartTimeoutSeconds: cfg.responseStartTimeoutSeconds,
+                };
+
           const streamOptions: Record<string, unknown> = {
             ...options,
             apiKey,
-            fetch: createResponseStartTimeoutFetch(cfg.responseStartTimeoutSeconds),
+            fetch: createCorsProxyFetch(proxyOptions, {
+              customEndpoint: isCustomEndpoint,
+              omitAuthentication,
+            }),
           };
 
-          if (cfg.mode === "byok" && cfg.provider === "custom") {
-            const noAuthentication = !cfg.apiKey.trim();
-            if (noAuthentication) {
-              // pi-ai/OpenAI-compatible adapters require a non-empty client key
-              // structurally. Suppress the actual auth headers in the request.
-              apiKey = "openexcel-custom-no-auth";
-              streamOptions.apiKey = apiKey;
-              streamOptions.headers = {
-                ...((options as { headers?: Record<string, string | null> }).headers ?? {}),
-                authorization: null,
-                "api-key": null,
-                "x-api-key": null,
-              };
-            }
-
-            streamOptions.fetch = createCorsProxyFetch(cfg, {
-              customEndpoint: true,
-              omitAuthentication: noAuthentication,
-            });
+          if (omitAuthentication) {
+            streamOptions.headers = {
+              ...((options as { headers?: Record<string, string | null> }).headers ?? {}),
+              authorization: null,
+              "api-key": null,
+              "x-api-key": null,
+            };
           }
 
           return streamSimple(model, context, streamOptions as any);
