@@ -1,5 +1,6 @@
 import { getModel, getModels, type Model } from "@earendil-works/pi-ai/compat";
 import { buildCorsProxyUrl } from "../../../lib/cors-proxy";
+import { DEFAULT_RESPONSE_START_TIMEOUT_SECONDS, fetchWithResponseStartTimeout } from "../../../lib/request-timeout";
 import type { ByokProviderConfig, GatewayProviderConfig, ProviderConfig } from "./config";
 
 export interface DiscoveredModel {
@@ -237,8 +238,12 @@ function parseGoogleModels(payload: unknown): DiscoveredModel[] {
     .filter((model): model is DiscoveredModel => model !== null);
 }
 
-async function fetchJson(url: string, headers: Record<string, string>): Promise<unknown> {
-  const response = await fetch(url, { method: "GET", headers });
+async function fetchJson(
+  url: string,
+  headers: Record<string, string>,
+  responseStartTimeoutSeconds: number = DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
+): Promise<unknown> {
+  const response = await fetchWithResponseStartTimeout(url, { method: "GET", headers }, responseStartTimeoutSeconds);
   if (!response.ok) {
     let detail = "";
     try {
@@ -266,7 +271,7 @@ async function discoverChatGptCodexModels(config: ByokProviderConfig): Promise<M
   const accountId = extractChatGptAccountId(config.apiKey);
   if (accountId) headers["ChatGPT-Account-ID"] = accountId;
 
-  const payload = await fetchJson(buildCorsProxyUrl(url, config), headers);
+  const payload = await fetchJson(buildCorsProxyUrl(url, config), headers, config.responseStartTimeoutSeconds);
   const models = parseChatGptCodexModels(payload);
   if (models.length === 0) {
     throw new Error("ChatGPT returned no selectable Codex models for this account.");
@@ -317,7 +322,7 @@ export async function discoverByokModels(config: ByokProviderConfig): Promise<Mo
     return fallbackModels(config.provider);
   }
 
-  const payload = await fetchJson(buildCorsProxyUrl(targetUrl, config), headers);
+  const payload = await fetchJson(buildCorsProxyUrl(targetUrl, config), headers, config.responseStartTimeoutSeconds);
   const models = parser === "google" ? parseGoogleModels(payload) : parseOpenAICompatibleModels(payload);
 
   if (models.length === 0) {
@@ -327,11 +332,14 @@ export async function discoverByokModels(config: ByokProviderConfig): Promise<Mo
   return { models, source: "live" };
 }
 
-export async function discoverGatewayModels(gatewayUrl: string): Promise<ModelDiscoveryResult> {
+export async function discoverGatewayModels(
+  gatewayUrl: string,
+  responseStartTimeoutSeconds: number = DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
+): Promise<ModelDiscoveryResult> {
   const baseUrl = normalizeGatewayBaseUrl(gatewayUrl);
   if (!baseUrl) throw new Error("Enter a Gateway URL first.");
 
-  const payload = await fetchJson(`${baseUrl}/models`, { Accept: "application/json" });
+  const payload = await fetchJson(`${baseUrl}/models`, { Accept: "application/json" }, responseStartTimeoutSeconds);
   const models = parseOpenAICompatibleModels(payload, false);
   if (models.length === 0) throw new Error("The Gateway returned no models.");
   return { models, source: "live" };

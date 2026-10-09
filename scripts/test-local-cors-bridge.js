@@ -1,6 +1,11 @@
 const assert = require("assert");
 const http = require("http");
-const { BRIDGE_PATH, createLocalCorsBridgeMiddleware } = require("./local-cors-bridge");
+const {
+  BRIDGE_PATH,
+  DEFAULT_UPSTREAM_HEADER_TIMEOUT_MS,
+  createLocalCorsBridgeMiddleware,
+  parseUpstreamHeaderTimeoutMs,
+} = require("./local-cors-bridge");
 
 function listen(server, host = "127.0.0.1") {
   return new Promise((resolve, reject) => {
@@ -49,6 +54,13 @@ function requestBridge(port, targetUrl) {
 }
 
 async function main() {
+  assert.equal(DEFAULT_UPSTREAM_HEADER_TIMEOUT_MS, 180000);
+  assert.equal(parseUpstreamHeaderTimeoutMs(new URL("https://localhost/__openexcel_bridge")), 180000);
+  assert.equal(
+    parseUpstreamHeaderTimeoutMs(new URL("https://localhost/__openexcel_bridge?timeout_ms=240000")),
+    240000,
+  );
+
   const upstream = http.createServer((request, response) => {
     let requestBody = "";
     request.setEncoding("utf8");

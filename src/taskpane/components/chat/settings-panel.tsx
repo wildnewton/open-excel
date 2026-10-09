@@ -10,6 +10,7 @@ import {
   removeOAuthCredentials,
   saveOAuthCredentials,
 } from "../../../lib/oauth";
+import { DEFAULT_RESPONSE_START_TIMEOUT_SECONDS } from "../../../lib/request-timeout";
 import { useChat } from "./chat-context";
 import {
   API_TYPES,
@@ -81,6 +82,9 @@ function ByokSettingsPanel() {
   const [authMethod, setAuthMethod] = useState<"apikey" | "oauth">(() => savedByok?.authMethod || "apikey");
   const [apiType, setApiType] = useState(() => savedByok?.apiType || "openai-completions");
   const [customBaseUrl, setCustomBaseUrl] = useState(() => savedByok?.customBaseUrl || "");
+  const [responseStartTimeoutSeconds, setResponseStartTimeoutSeconds] = useState(
+    () => savedByok?.responseStartTimeoutSeconds ?? DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
+  );
 
   // OAuth flow state — restored from the upstream BYOK implementation.
   const [oauthFlow, setOauthFlow] = useState<OAuthFlowState>(() => {
@@ -116,6 +120,7 @@ function ByokSettingsPanel() {
       authMethod,
       apiType,
       customBaseUrl,
+      responseStartTimeoutSeconds,
     };
 
     // Built-in providers keep their existing automatic activation once
@@ -136,6 +141,7 @@ function ByokSettingsPanel() {
     authMethod,
     apiType,
     customBaseUrl,
+    responseStartTimeoutSeconds,
     setProviderConfig,
   ]);
 
@@ -267,6 +273,7 @@ function ByokSettingsPanel() {
         authMethod,
         apiType,
         customBaseUrl,
+        responseStartTimeoutSeconds,
       });
       setModels(result.models);
       setDiscoverySource(result.source);
@@ -306,6 +313,7 @@ function ByokSettingsPanel() {
       authMethod: "apikey",
       apiType,
       customBaseUrl: customBaseUrl.trim(),
+      responseStartTimeoutSeconds,
     };
     saveConfig(config);
     setProviderConfig(config);
@@ -317,6 +325,7 @@ function ByokSettingsPanel() {
     activeConfig.provider === provider &&
     activeConfig.apiKey === apiKey &&
     activeConfig.model === model &&
+    activeConfig.responseStartTimeoutSeconds === responseStartTimeoutSeconds &&
     (!isCustom || (activeConfig.apiType === apiType && activeConfig.customBaseUrl === customBaseUrl));
   const canDiscover = !isCustom && provider.length > 0 && apiKey.length > 0;
   const connectLabel = models.length > 0 || discoverySource ? "Refresh Models" : "Connect";
@@ -624,6 +633,29 @@ function ByokSettingsPanel() {
             </label>
           )}
 
+          <label className="block">
+            <span className="block text-xs text-(--chat-text-secondary) mb-1.5">Response Start Timeout (seconds)</span>
+            <input
+              type="number"
+              min={1}
+              max={3600}
+              step={1}
+              value={responseStartTimeoutSeconds}
+              onChange={(e) => {
+                const next = Number.parseInt(e.target.value, 10);
+                if (!Number.isFinite(next) || next < 1) return;
+                if (isCustom) clearProviderConfig();
+                setResponseStartTimeoutSeconds(Math.min(3600, next));
+              }}
+              className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) focus:outline-none focus:border-(--chat-border-active)"
+              style={inputStyle}
+            />
+            <p className="text-[10px] text-(--chat-text-muted) mt-1">
+              Maximum wait for response headers / streaming to start. Default 180 seconds. Once streaming starts, this
+              timeout no longer applies.
+            </p>
+          </label>
+
           {!isCustom && (
             <>
               {/* Model discovery is deliberately downstream of authentication. */}
@@ -771,6 +803,9 @@ function GatewaySettingsPanel() {
     savedGateway?.model ? [{ id: savedGateway.model, name: savedGateway.model }] : [],
   );
   const [thinking, setThinking] = useState<ThinkingLevel>(() => savedGateway?.thinking || "none");
+  const [responseStartTimeoutSeconds, setResponseStartTimeoutSeconds] = useState(
+    () => savedGateway?.responseStartTimeoutSeconds ?? DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
+  );
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [discoverySource, setDiscoverySource] = useState<"live" | "fallback" | null>(null);
@@ -783,10 +818,11 @@ function GatewaySettingsPanel() {
       model,
       thinking,
       followMode,
+      responseStartTimeoutSeconds,
     };
     if (gatewayUrl || model) saveConfig(config);
     if (gatewayUrl.trim() && model) setProviderConfig(config);
-  }, [gatewayUrl, model, thinking, followMode, setProviderConfig]);
+  }, [gatewayUrl, model, thinking, followMode, responseStartTimeoutSeconds, setProviderConfig]);
 
   const handleGatewayUrlChange = (value: string) => {
     setGatewayUrl(value);
@@ -800,7 +836,7 @@ function GatewaySettingsPanel() {
     setIsDiscovering(true);
     setDiscoveryError(null);
     try {
-      const result = await discoverGatewayModels(gatewayUrl);
+      const result = await discoverGatewayModels(gatewayUrl, responseStartTimeoutSeconds);
       setModels(result.models);
       setDiscoverySource(result.source);
       if (!result.models.some((item) => item.id === model)) setModel(result.models[0]?.id ?? "");
@@ -813,7 +849,10 @@ function GatewaySettingsPanel() {
 
   const activeConfig = state.providerConfig;
   const isConfigured =
-    activeConfig?.mode === "gateway" && activeConfig.gatewayUrl === gatewayUrl.trim() && activeConfig.model === model;
+    activeConfig?.mode === "gateway" &&
+    activeConfig.gatewayUrl === gatewayUrl.trim() &&
+    activeConfig.model === model &&
+    activeConfig.responseStartTimeoutSeconds === responseStartTimeoutSeconds;
   const connectLabel = models.length > 0 || discoverySource ? "Refresh Models" : "Connect";
 
   return (
@@ -875,6 +914,28 @@ function GatewaySettingsPanel() {
             {discoverySource === "live" && (
               <p className="text-[10px] text-(--chat-text-muted) mt-1">Models loaded live from the Gateway.</p>
             )}
+          </label>
+
+          <label className="block">
+            <span className="block text-xs text-(--chat-text-secondary) mb-1.5">Response Start Timeout (seconds)</span>
+            <input
+              type="number"
+              min={1}
+              max={3600}
+              step={1}
+              value={responseStartTimeoutSeconds}
+              onChange={(e) => {
+                const next = Number.parseInt(e.target.value, 10);
+                if (!Number.isFinite(next) || next < 1) return;
+                setResponseStartTimeoutSeconds(Math.min(3600, next));
+              }}
+              className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) focus:outline-none focus:border-(--chat-border-active)"
+              style={inputStyle}
+            />
+            <p className="text-[10px] text-(--chat-text-muted) mt-1">
+              Maximum wait for response headers / streaming to start. Default 180 seconds. Once streaming starts, this
+              timeout no longer applies.
+            </p>
           </label>
 
           <ThinkingSelector value={thinking} onChange={setThinking} />

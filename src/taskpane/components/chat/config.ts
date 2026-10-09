@@ -1,4 +1,8 @@
 import { loadOAuthCredentials } from "../../../lib/oauth";
+import {
+  DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
+  normalizeResponseStartTimeoutSeconds,
+} from "../../../lib/request-timeout";
 
 export type ThinkingLevel = "none" | "low" | "medium" | "high";
 
@@ -14,6 +18,7 @@ export interface ByokProviderConfig {
   authMethod?: "apikey" | "oauth";
   apiType?: string;
   customBaseUrl?: string;
+  responseStartTimeoutSeconds: number;
 }
 
 export interface GatewayProviderConfig {
@@ -22,6 +27,7 @@ export interface GatewayProviderConfig {
   model: string;
   thinking: ThinkingLevel;
   followMode: boolean;
+  responseStartTimeoutSeconds: number;
 }
 
 export type ProviderConfig = ByokProviderConfig | GatewayProviderConfig;
@@ -85,6 +91,9 @@ export function loadSavedConfig(): ProviderConfig | null {
         model: typeof parsed.model === "string" ? parsed.model : "",
         thinking: parseThinkingLevel(parsed.thinking),
         followMode: typeof parsed.followMode === "boolean" ? parsed.followMode : true,
+        responseStartTimeoutSeconds: normalizeResponseStartTimeoutSeconds(
+          parsed.responseStartTimeoutSeconds ?? DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
+        ),
       };
     }
 
@@ -108,6 +117,9 @@ export function loadSavedConfig(): ProviderConfig | null {
       authMethod,
       apiType: typeof parsed.apiType === "string" ? parsed.apiType : "openai-completions",
       customBaseUrl: typeof parsed.customBaseUrl === "string" ? parsed.customBaseUrl : "",
+      responseStartTimeoutSeconds: normalizeResponseStartTimeoutSeconds(
+        parsed.responseStartTimeoutSeconds ?? DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
+      ),
     };
   } catch {
     return null;

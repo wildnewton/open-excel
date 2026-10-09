@@ -17,6 +17,7 @@ import { buildCorsProxyUrl, createCorsProxyFetch } from "../../../lib/cors-proxy
 import type { DirtyRange } from "../../../lib/dirty-tracker";
 import { getWorkbookMetadata, navigateTo } from "../../../lib/excel/api";
 import { loadOAuthCredentials, refreshOAuthToken, saveOAuthCredentials } from "../../../lib/oauth";
+import { createResponseStartTimeoutFetch } from "../../../lib/request-timeout";
 import {
   type ChatSession,
   createSession,
@@ -458,7 +459,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         streamFn: async (model, context, options) => {
           const cfg = configRef.current ?? config;
           let apiKey = await getActiveApiKey(cfg);
-          const streamOptions: Record<string, unknown> = { ...options, apiKey };
+          const streamOptions: Record<string, unknown> = {
+            ...options,
+            apiKey,
+            fetch: createResponseStartTimeoutFetch(cfg.responseStartTimeoutSeconds),
+          };
 
           if (cfg.mode === "byok" && cfg.provider === "custom") {
             const noAuthentication = !cfg.apiKey.trim();

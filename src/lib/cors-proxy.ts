@@ -1,6 +1,9 @@
+import { fetchWithResponseStartTimeout, normalizeResponseStartTimeoutSeconds } from "./request-timeout";
+
 export interface CorsProxyOptions {
   useProxy: boolean;
   proxyUrl: string;
+  responseStartTimeoutSeconds?: number;
 }
 
 export interface CorsProxyFetchBehavior {
@@ -21,8 +24,9 @@ function isLocalDevelopmentHost(): boolean {
   return window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
 }
 
-function localBridgeUrl(targetUrl: string): string {
-  return `${window.location.origin}${LOCAL_CORS_BRIDGE_PATH}?url=${encodeURIComponent(targetUrl)}`;
+function localBridgeUrl(targetUrl: string, timeoutSeconds: unknown): string {
+  const timeoutMs = normalizeResponseStartTimeoutSeconds(timeoutSeconds) * 1000;
+  return `${window.location.origin}${LOCAL_CORS_BRIDGE_PATH}?url=${encodeURIComponent(targetUrl)}&timeout_ms=${timeoutMs}`;
 }
 
 function isHttpUrl(value: string): boolean {
@@ -48,7 +52,7 @@ function resolveProxyRoute(
     }
 
     if (isLocalDevelopmentHost()) {
-      return { url: localBridgeUrl(targetUrl), builtInBridge: true };
+      return { url: localBridgeUrl(targetUrl, options.responseStartTimeoutSeconds), builtInBridge: true };
     }
   }
 
@@ -62,7 +66,7 @@ function resolveProxyRoute(
     window.location.protocol === "https:" &&
     isHttpUrl(targetUrl)
   ) {
-    return { url: localBridgeUrl(targetUrl), builtInBridge: true };
+    return { url: localBridgeUrl(targetUrl, options.responseStartTimeoutSeconds), builtInBridge: true };
   }
 
   return { url: targetUrl, builtInBridge: false };
@@ -112,19 +116,23 @@ export function createCorsProxyFetch(
     const method = request.method.toUpperCase();
     const body = method === "GET" || method === "HEAD" ? undefined : await request.clone().arrayBuffer();
 
-    return globalThis.fetch(route.url, {
-      method: request.method,
-      headers,
-      body,
-      cache: request.cache,
-      credentials: request.credentials,
-      integrity: request.integrity,
-      keepalive: request.keepalive,
-      mode: route.builtInBridge ? "same-origin" : request.mode,
-      redirect: request.redirect,
-      referrerPolicy: request.referrerPolicy,
-      signal: request.signal,
-    });
+    return fetchWithResponseStartTimeout(
+      route.url,
+      {
+        method: request.method,
+        headers,
+        body,
+        cache: request.cache,
+        credentials: request.credentials,
+        integrity: request.integrity,
+        keepalive: request.keepalive,
+        mode: route.builtInBridge ? "same-origin" : request.mode,
+        redirect: request.redirect,
+        referrerPolicy: request.referrerPolicy,
+        signal: request.signal,
+      },
+      options.responseStartTimeoutSeconds,
+    );
   };
 
   return proxyFetch as typeof globalThis.fetch;

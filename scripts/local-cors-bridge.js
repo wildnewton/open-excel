@@ -8,7 +8,9 @@ const { HttpsProxyAgent } = require("https-proxy-agent");
 const BRIDGE_PATH = "/__openexcel_bridge";
 const CUSTOM_ENDPOINT_HEADER = "x-openexcel-custom-endpoint";
 const DNS_CLASSIFICATION_TIMEOUT_MS = 2000;
-const UPSTREAM_HEADER_TIMEOUT_MS = 60000;
+const DEFAULT_UPSTREAM_HEADER_TIMEOUT_MS = 180000;
+const MIN_UPSTREAM_HEADER_TIMEOUT_MS = 1000;
+const MAX_UPSTREAM_HEADER_TIMEOUT_MS = 3600000;
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
   "keep-alive",
@@ -162,6 +164,12 @@ function createRequestId() {
   return Math.random().toString(36).slice(2, 8);
 }
 
+function parseUpstreamHeaderTimeoutMs(requestUrl) {
+  const raw = Number.parseInt(requestUrl.searchParams.get("timeout_ms") || "", 10);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_UPSTREAM_HEADER_TIMEOUT_MS;
+  return Math.min(MAX_UPSTREAM_HEADER_TIMEOUT_MS, Math.max(MIN_UPSTREAM_HEADER_TIMEOUT_MS, raw));
+}
+
 function createLocalCorsBridgeMiddleware() {
   const outboundProxy = detectOutboundProxy();
   let agent;
@@ -187,6 +195,7 @@ function createLocalCorsBridgeMiddleware() {
 
       if (requestUrl.pathname !== BRIDGE_PATH) return next();
 
+      const upstreamHeaderTimeoutMs = parseUpstreamHeaderTimeoutMs(requestUrl);
       const rawTarget = requestUrl.searchParams.get("url");
       if (!rawTarget) {
         response.statusCode = 400;
@@ -255,7 +264,7 @@ function createLocalCorsBridgeMiddleware() {
       const startedAt = Date.now();
 
       console.log(
-        `[OpenExcel bridge:${requestId}] start method=${method} protocol=${target.protocol.slice(0, -1)} custom=${trustedCustomEndpoint ? "yes" : "no"} route=${route}`,
+        `[OpenExcel bridge:${requestId}] start method=${method} protocol=${target.protocol.slice(0, -1)} custom=${trustedCustomEndpoint ? "yes" : "no"} route=${route} responseStartTimeout=${upstreamHeaderTimeoutMs}ms`,
       );
 
       let headerTimer;
@@ -290,10 +299,10 @@ function createLocalCorsBridgeMiddleware() {
       );
 
       headerTimer = setTimeout(() => {
-        const timeoutError = new Error(`Timed out waiting for upstream response headers after ${UPSTREAM_HEADER_TIMEOUT_MS}ms`);
+        const timeoutError = new Error(`Timed out waiting for upstream response headers after ${upstreamHeaderTimeoutMs}ms`);
         timeoutError.code = "OPENEXCEL_UPSTREAM_HEADER_TIMEOUT";
         upstreamRequest.destroy(timeoutError);
-      }, UPSTREAM_HEADER_TIMEOUT_MS);
+      }, upstreamHeaderTimeoutMs);
 
       upstreamRequest.on("error", (error) => {
         if (headerTimer) clearTimeout(headerTimer);
@@ -338,7 +347,9 @@ function createLocalCorsBridgeMiddleware() {
 
 module.exports = {
   BRIDGE_PATH,
+  DEFAULT_UPSTREAM_HEADER_TIMEOUT_MS,
   createLocalCorsBridgeMiddleware,
+  parseUpstreamHeaderTimeoutMs,
   isPrivateIpv4,
   isPrivateIpv6,
   isTrustedCustomEndpointRequest,
