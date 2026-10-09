@@ -18,6 +18,14 @@ type JsonRecord = Record<string, unknown>;
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const GATEWAY_COMPAT_API_KEY = "openexcel-gateway-no-auth";
+const CHATGPT_CODEX_MODELS_URL = "https://chatgpt.com/backend-api/codex/models";
+
+// The Codex backend requires a client_version query parameter and uses it as a
+// minimum-client compatibility gate. OpenExcel is not the Codex CLI, so use a
+// compatibility ceiling rather than tying discovery to this add-in's unrelated
+// package version. The returned catalog is still account-scoped and filtered by
+// the backend; this value is not a model allowlist.
+const CHATGPT_CODEX_DISCOVERY_CLIENT_VERSION = "1.0.0";
 
 const DEFAULT_API_PREFERENCE = [
   "openai-responses",
@@ -109,6 +117,48 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function decodeJwtPayload(token: string): JsonRecord | null {
+  const parts = token.split(".");
+  if (parts.length < 2 || !parts[1]) return null;
+
+  try {
+    const normalized = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return asRecord(JSON.parse(new TextDecoder().decode(bytes)));
+  } catch {
+    return null;
+  }
+}
+
+function extractChatGptAccountId(accessToken: string): string | undefined {
+  const claims = decodeJwtPayload(accessToken);
+  if (!claims) return undefined;
+
+  const direct = stringValue(claims.chatgpt_account_id);
+  if (direct) return direct;
+
+  const authClaims = asRecord(claims["https://api.openai.com/auth"]);
+  const nested = stringValue(authClaims?.chatgpt_account_id);
+  if (nested) return nested;
+
+  const organizations = Array.isArray(claims.organizations) ? claims.organizations : [];
+  for (const organization of organizations) {
+    const id = stringValue(asRecord(organization)?.id);
+    if (id) return id;
+  }
+
+  return undefined;
+}
+
 function parseOpenAICompatibleModels(payload: unknown, filterUnsupported = true): DiscoveredModel[] {
   const root = asRecord(payload);
   const data = Array.isArray(root?.data) ? root.data : [];
@@ -130,6 +180,33 @@ function parseOpenAICompatibleModels(payload: unknown, filterUnsupported = true)
         name,
         contextWindow: numberValue(record?.context_window ?? record?.context_length),
         maxTokens: numberValue(record?.max_tokens ?? record?.max_output_tokens),
+      };
+    })
+    .filter((model): model is DiscoveredModel => model !== null);
+}
+
+function parseChatGptCodexModels(payload: unknown): DiscoveredModel[] {
+  const root = asRecord(payload);
+  const models = Array.isArray(root?.models) ? root.models : [];
+
+  return models
+    .map((item): DiscoveredModel | null => {
+      const record = asRecord(item);
+      if (!record) return null;
+
+      const id = stringValue(record.slug) ?? stringValue(record.id);
+      if (!id) return null;
+
+      const visibility = stringValue(record.visibility);
+      if (visibility && visibility !== "list") return null;
+      if (record.supported_in_api === false) return null;
+
+      const name = stringValue(record.display_name) ?? stringValue(record.name) ?? id;
+      return {
+        id,
+        name,
+        contextWindow: numberValue(record.context_window ?? record.max_context_window),
+        maxTokens: numberValue(record.max_tokens ?? record.max_output_tokens),
       };
     })
     .filter((model): model is DiscoveredModel => model !== null);
@@ -177,7 +254,42 @@ async function fetchJson(url: string, headers: Record<string, string>): Promise<
   return response.json();
 }
 
+async function discoverChatGptCodexModels(config: ByokProviderConfig): Promise<ModelDiscoveryResult> {
+  if (config.authMethod !== "oauth") {
+    throw new Error("OpenAI (ChatGPT) model discovery requires the existing OAuth sign-in flow.");
+  }
+
+  const url = `${CHATGPT_CODEX_MODELS_URL}?client_version=${encodeURIComponent(CHATGPT_CODEX_DISCOVERY_CLIENT_VERSION)}`;
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    Authorization: `Bearer ${config.apiKey}`,
+    originator: "pi",
+    version: CHATGPT_CODEX_DISCOVERY_CLIENT_VERSION,
+  };
+
+  const accountId = extractChatGptAccountId(config.apiKey);
+  if (accountId) headers["ChatGPT-Account-ID"] = accountId;
+
+  const payload = await fetchJson(applyCorsProxy(url, config), headers);
+  const models = parseChatGptCodexModels(payload);
+  if (models.length === 0) {
+    throw new Error("ChatGPT returned no selectable Codex models for this account.");
+  }
+
+  return {
+    models,
+    source: "live",
+    message: "Models loaded live from your ChatGPT account.",
+  };
+}
+
 export async function discoverByokModels(config: ByokProviderConfig): Promise<ModelDiscoveryResult> {
+  // ChatGPT subscription OAuth uses the Codex account catalog, not OpenAI's
+  // public /v1/models endpoint and not pi-ai's bundled static catalog.
+  if (config.provider === "openai-codex") {
+    return discoverChatGptCodexModels(config);
+  }
+
   const template = providerTemplate(config.provider);
   if (!template?.baseUrl) return fallbackModels(config.provider);
 
@@ -237,8 +349,8 @@ function createUnknownByokModel(config: ByokProviderConfig): Model<any> {
     ...template,
     id: config.model,
     name: config.model,
-    reasoning: false,
-    input: ["text"],
+    reasoning: template.reasoning,
+    input: template.input,
     cost: ZERO_COST,
   } as Model<any>;
 }
