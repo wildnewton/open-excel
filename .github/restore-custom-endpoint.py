@@ -1,0 +1,450 @@
+from pathlib import Path
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    p = Path(path)
+    text = p.read_text()
+    if old not in text:
+        raise SystemExit(f"Expected block not found in {path}: {old[:120]!r}")
+    p.write_text(text.replace(old, new, 1))
+
+
+# config.ts — restore custom endpoint fields + API type choices.
+path = "src/taskpane/components/chat/config.ts"
+replace_once(
+    path,
+    '  authMethod?: "apikey" | "oauth";\n}',
+    '  authMethod?: "apikey" | "oauth";\n  apiType?: string;\n  customBaseUrl?: string;\n}',
+)
+
+replace_once(
+    path,
+    'export const APP_MODE: ProviderConfig["mode"] = __OPENEXCEL_MODE__;\n',
+    '''export const APP_MODE: ProviderConfig["mode"] = __OPENEXCEL_MODE__;
+
+export const API_TYPES = [
+  {
+    id: "openai-completions",
+    name: "OpenAI Completions",
+    hint: "Most compatible — Ollama, vLLM, LMStudio, etc.",
+  },
+  {
+    id: "openai-responses",
+    name: "OpenAI Responses",
+    hint: "Newer OpenAI API format",
+  },
+  { id: "anthropic-messages", name: "Anthropic Messages", hint: "Claude API" },
+  {
+    id: "google-generative-ai",
+    name: "Google Generative AI",
+    hint: "Gemini API",
+  },
+  {
+    id: "azure-openai-responses",
+    name: "Azure OpenAI Responses",
+    hint: "Azure-hosted OpenAI",
+  },
+  {
+    id: "openai-codex-responses",
+    name: "OpenAI Codex Responses",
+    hint: "ChatGPT subscription models",
+  },
+  {
+    id: "google-gemini-cli",
+    name: "Google Gemini CLI",
+    hint: "Cloud Code Assist",
+  },
+  { id: "google-vertex", name: "Google Vertex AI", hint: "Vertex AI endpoint" },
+] as const;
+''',
+)
+
+replace_once(
+    path,
+    '      authMethod,\n    };',
+    '      authMethod,\n      apiType: typeof parsed.apiType === "string" ? parsed.apiType : "openai-completions",\n      customBaseUrl: typeof parsed.customBaseUrl === "string" ? parsed.customBaseUrl : "",\n    };',
+)
+
+replace_once(
+    path,
+    '''export function isConfigReady(config: ProviderConfig | null): config is ProviderConfig {
+  if (!config?.model) return false;
+  if (config.mode === "gateway") return config.gatewayUrl.trim().length > 0;
+  return config.provider.trim().length > 0 && config.apiKey.trim().length > 0;
+}''',
+    '''export function isConfigReady(config: ProviderConfig | null): config is ProviderConfig {
+  if (!config?.model) return false;
+  if (config.mode === "gateway") return config.gatewayUrl.trim().length > 0;
+  if (config.provider === "custom") {
+    return Boolean(config.apiKey.trim() && config.apiType?.trim() && config.customBaseUrl?.trim());
+  }
+  return config.provider.trim().length > 0 && config.apiKey.trim().length > 0;
+}''',
+)
+
+# model-discovery.ts — construct a real custom Model instead of looking it up in pi-ai.
+path = "src/taskpane/components/chat/model-discovery.ts"
+marker = 'function createUnknownByokModel(config: ByokProviderConfig): Model<any> {'
+custom_fn = '''function createCustomByokModel(config: ByokProviderConfig): Model<any> {
+  if (!config.apiType?.trim() || !config.customBaseUrl?.trim() || !config.model.trim()) {
+    throw new Error("Custom endpoint requires API type, Base URL, and Model ID.");
+  }
+
+  return {
+    id: config.model,
+    name: config.model,
+    api: config.apiType as any,
+    provider: "custom",
+    baseUrl: trimTrailingSlash(config.customBaseUrl.trim()),
+    reasoning: true,
+    input: ["text", "image"],
+    cost: ZERO_COST,
+    contextWindow: 128000,
+    maxTokens: 32000,
+  } as Model<any>;
+}
+
+'''
+replace_once(path, marker, custom_fn + marker)
+replace_once(
+    path,
+    '''export function resolveConfiguredModel(config: ProviderConfig): Model<any> {
+  if (config.mode === "gateway") return createGatewayModel(config);
+  return builtInModel(config.provider, config.model) ?? createUnknownByokModel(config);
+}''',
+    '''export function resolveConfiguredModel(config: ProviderConfig): Model<any> {
+  if (config.mode === "gateway") return createGatewayModel(config);
+  if (config.provider === "custom") return createCustomByokModel(config);
+  return builtInModel(config.provider, config.model) ?? createUnknownByokModel(config);
+}''',
+)
+
+# settings-panel.tsx — restore Custom Endpoint UX while keeping live discovery for normal providers.
+path = "src/taskpane/components/chat/settings-panel.tsx"
+replace_once(
+    path,
+    '  APP_MODE,\n  type ByokProviderConfig,',
+    '  API_TYPES,\n  APP_MODE,\n  type ByokProviderConfig,',
+)
+replace_once(
+    path,
+    '  const [authMethod, setAuthMethod] = useState<"apikey" | "oauth">(() => savedByok?.authMethod || "apikey");\n',
+    '  const [authMethod, setAuthMethod] = useState<"apikey" | "oauth">(() => savedByok?.authMethod || "apikey");\n  const [apiType, setApiType] = useState(() => savedByok?.apiType || "openai-completions");\n  const [customBaseUrl, setCustomBaseUrl] = useState(() => savedByok?.customBaseUrl || "");\n',
+)
+replace_once(
+    path,
+    '  const hasOAuth = provider in OAUTH_PROVIDERS;\n  const showApiKeyInput = !(hasOAuth && authMethod === "oauth");',
+    '  const isCustom = provider === "custom";\n  const hasOAuth = provider in OAUTH_PROVIDERS;\n  const showApiKeyInput = !(hasOAuth && authMethod === "oauth");',
+)
+replace_once(
+    path,
+    '''      followMode,
+      authMethod,
+    };
+
+    // Persist the auth choice even before a model has been discovered.
+    if (provider || apiKey || model) saveConfig(config);
+    if (provider && apiKey && model) setProviderConfig(config);
+  }, [provider, apiKey, model, useProxy, proxyUrl, thinking, followMode, authMethod, setProviderConfig]);''',
+    '''      followMode,
+      authMethod,
+      apiType,
+      customBaseUrl,
+    };
+
+    // Persist settings even before the configuration is complete.
+    if (provider || apiKey || model || customBaseUrl) saveConfig(config);
+    const ready =
+      provider === "custom"
+        ? Boolean(apiKey && model && apiType && customBaseUrl.trim())
+        : Boolean(provider && apiKey && model);
+    if (ready) setProviderConfig(config);
+  }, [
+    provider,
+    apiKey,
+    model,
+    useProxy,
+    proxyUrl,
+    thinking,
+    followMode,
+    authMethod,
+    apiType,
+    customBaseUrl,
+    setProviderConfig,
+  ]);''',
+)
+replace_once(
+    path,
+    '''  const handleProviderChange = (newProvider: string) => {
+    setProvider(newProvider);
+    invalidateDiscovery();
+
+    const keepOAuth = newProvider in OAUTH_PROVIDERS ? authMethod : "apikey";
+    setAuthMethod(keepOAuth);
+
+    if (!(newProvider in OAUTH_PROVIDERS)) {
+      setOauthFlow({ step: "idle" });
+    } else if (keepOAuth === "oauth") {''',
+    '''  const handleProviderChange = (newProvider: string) => {
+    setProvider(newProvider);
+    invalidateDiscovery();
+
+    if (newProvider === "custom") {
+      setAuthMethod("apikey");
+      setApiKey("");
+      setOauthFlow({ step: "idle" });
+      return;
+    }
+
+    const keepOAuth = newProvider in OAUTH_PROVIDERS ? authMethod : "apikey";
+    setAuthMethod(keepOAuth);
+
+    if (!(newProvider in OAUTH_PROVIDERS)) {
+      setOauthFlow({ step: "idle" });
+    } else if (keepOAuth === "oauth") {''',
+)
+replace_once(
+    path,
+    '''  const handleApiKeyChange = (newApiKey: string) => {
+    setApiKey(newApiKey);
+    invalidateDiscovery();
+  };''',
+    '''  const handleApiKeyChange = (newApiKey: string) => {
+    setApiKey(newApiKey);
+    if (!isCustom) invalidateDiscovery();
+  };''',
+)
+replace_once(
+    path,
+    '''        followMode,
+        authMethod,
+      });''',
+    '''        followMode,
+        authMethod,
+        apiType,
+        customBaseUrl,
+      });''',
+)
+replace_once(
+    path,
+    '''  const isConfigured =
+    activeConfig?.mode === "byok" &&
+    activeConfig.provider === provider &&
+    activeConfig.apiKey === apiKey &&
+    activeConfig.model === model;
+  const canDiscover = provider.length > 0 && apiKey.length > 0;''',
+    '''  const isConfigured =
+    activeConfig?.mode === "byok" &&
+    activeConfig.provider === provider &&
+    activeConfig.apiKey === apiKey &&
+    activeConfig.model === model &&
+    (!isCustom || (activeConfig.apiType === apiType && activeConfig.customBaseUrl === customBaseUrl));
+  const canDiscover = !isCustom && provider.length > 0 && apiKey.length > 0;''',
+)
+replace_once(
+    path,
+    '''              {availableProviders.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>''',
+    '''              {availableProviders.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+              <option disabled>──────────</option>
+              <option value="custom">Custom Endpoint</option>
+            </select>''',
+)
+custom_ui = '''
+          {isCustom && (
+            <>
+              <label className="block">
+                <span className="block text-xs text-(--chat-text-secondary) mb-1.5">API Type</span>
+                <select
+                  value={apiType}
+                  onChange={(e) => setApiType(e.target.value)}
+                  className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) focus:outline-none focus:border-(--chat-border-active)"
+                  style={inputStyle}
+                >
+                  {API_TYPES.map((type) => (
+                    <option key={type.id} value={type.id}>
+                      {type.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-(--chat-text-muted) mt-1">
+                  {API_TYPES.find((type) => type.id === apiType)?.hint}
+                </p>
+              </label>
+
+              <label className="block">
+                <span className="block text-xs text-(--chat-text-secondary) mb-1.5">Base URL</span>
+                <input
+                  type="text"
+                  value={customBaseUrl}
+                  onChange={(e) => setCustomBaseUrl(e.target.value)}
+                  placeholder="https://api.openai.com/v1"
+                  className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) placeholder:text-(--chat-text-muted) focus:outline-none focus:border-(--chat-border-active)"
+                  style={inputStyle}
+                />
+                <p className="text-[10px] text-(--chat-text-muted) mt-1">The API endpoint URL for your provider</p>
+              </label>
+
+              <label className="block">
+                <span className="block text-xs text-(--chat-text-secondary) mb-1.5">Model ID</span>
+                <input
+                  type="text"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder="gpt-4o"
+                  className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) placeholder:text-(--chat-text-muted) focus:outline-none focus:border-(--chat-border-active)"
+                  style={inputStyle}
+                />
+              </label>
+            </>
+          )}
+'''
+replace_once(
+    path,
+    '          {/* Auth method toggle — unchanged BYOK behavior for OAuth-capable providers. */}',
+    custom_ui + '\n          {/* Auth method toggle — unchanged BYOK behavior for OAuth-capable providers. */}',
+)
+replace_once(
+    path,
+    '          {/* Model discovery is deliberately downstream of authentication. */}',
+    '          {!isCustom && (\n            <>\n              {/* Model discovery is deliberately downstream of authentication. */}',
+)
+replace_once(
+    path,
+    '''          {discoverySource === "fallback" && (
+            <div>
+              <span className="block text-xs text-(--chat-text-secondary) mb-1.5">Manual Model ID</span>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={manualModel}
+                  onChange={(e) => setManualModel(e.target.value)}
+                  placeholder="provider-model-id"
+                  className="min-w-0 flex-1 bg-(--chat-input-bg) text-(--chat-text-primary)
+                             text-sm px-3 py-2 border border-(--chat-border)
+                             placeholder:text-(--chat-text-muted)
+                             focus:outline-none focus:border-(--chat-border-active)"
+                  style={inputStyle}
+                />
+                <button
+                  type="button"
+                  onClick={useManualModel}
+                  disabled={!manualModel.trim()}
+                  className="px-3 py-2 text-xs border border-(--chat-border) text-(--chat-text-secondary)
+                             hover:border-(--chat-border-active) disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={inputStyle}
+                >
+                  Use
+                </button>
+              </div>
+            </div>
+          )}
+
+          <ThinkingSelector''',
+    '''          {discoverySource === "fallback" && (
+            <div>
+              <span className="block text-xs text-(--chat-text-secondary) mb-1.5">Manual Model ID</span>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={manualModel}
+                  onChange={(e) => setManualModel(e.target.value)}
+                  placeholder="provider-model-id"
+                  className="min-w-0 flex-1 bg-(--chat-input-bg) text-(--chat-text-primary)
+                             text-sm px-3 py-2 border border-(--chat-border)
+                             placeholder:text-(--chat-text-muted)
+                             focus:outline-none focus:border-(--chat-border-active)"
+                  style={inputStyle}
+                />
+                <button
+                  type="button"
+                  onClick={useManualModel}
+                  disabled={!manualModel.trim()}
+                  className="px-3 py-2 text-xs border border-(--chat-border) text-(--chat-text-secondary)
+                             hover:border-(--chat-border-active) disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={inputStyle}
+                >
+                  Use
+                </button>
+              </div>
+            </div>
+          )}
+            </>
+          )}
+
+          <ThinkingSelector''',
+)
+replace_once(
+    path,
+    '<span className="text-(--chat-text-muted)">Authenticate, connect, and select a model</span>',
+    '<span className="text-(--chat-text-muted)">{isCustom ? "Enter endpoint, model, and API key" : "Authenticate, connect, and select a model"}</span>',
+)
+
+# local-cors-bridge.js — preserve Ollama/LMStudio localhost support safely.
+path = "scripts/local-cors-bridge.js"
+replace_once(
+    path,
+    'const https = require("https");\nconst net = require("net");',
+    'const http = require("http");\nconst https = require("https");\nconst net = require("net");',
+)
+replace_once(
+    path,
+    '''function isDisallowedTarget(target) {
+  const hostname = target.hostname.toLowerCase().replace(/^\\[|\\]$/g, "");
+  if (target.protocol !== "https:") return true;
+  if (hostname === "localhost" || hostname.endsWith(".local")) return true;
+  if (net.isIPv4(hostname)) return isPrivateIpv4(hostname);
+  if (net.isIPv6(hostname)) {
+    return hostname === "::1" || hostname.startsWith("fc") || hostname.startsWith("fd") || hostname.startsWith("fe8") || hostname.startsWith("fe9") || hostname.startsWith("fea") || hostname.startsWith("feb");
+  }
+  return false;
+}''',
+    '''function isLoopbackTarget(hostname) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+function isDisallowedTarget(target) {
+  const hostname = target.hostname.toLowerCase().replace(/^\\[|\\]$/g, "");
+  const loopback = isLoopbackTarget(hostname);
+
+  // Local model servers (Ollama / LM Studio) commonly expose plain HTTP.
+  // Permit HTTP only on loopback. Public targets must remain HTTPS.
+  if (target.protocol === "http:") return !loopback;
+  if (target.protocol !== "https:") return true;
+  if (loopback) return false;
+  if (hostname.endsWith(".local")) return true;
+  if (net.isIPv4(hostname)) return isPrivateIpv4(hostname);
+  if (net.isIPv6(hostname)) {
+    return hostname.startsWith("fc") || hostname.startsWith("fd") || hostname.startsWith("fe8") || hostname.startsWith("fe9") || hostname.startsWith("fea") || hostname.startsWith("feb");
+  }
+  return false;
+}''',
+)
+replace_once(
+    path,
+    '''    const upstreamRequest = https.request(
+      target,
+      {
+        method,
+        headers: copyRequestHeaders(request.headers),
+        agent,
+      },''',
+    '''    const loopback = isLoopbackTarget(target.hostname.toLowerCase().replace(/^\\[|\\]$/g, ""));
+    const transport = target.protocol === "http:" ? http : https;
+    const upstreamRequest = transport.request(
+      target,
+      {
+        method,
+        headers: copyRequestHeaders(request.headers),
+        // Local endpoints should never be sent through the machine's outbound proxy.
+        agent: loopback ? undefined : agent,
+      },''',
+)
