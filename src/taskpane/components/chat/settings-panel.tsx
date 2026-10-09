@@ -1,5 +1,5 @@
 import { Check, ExternalLink, Eye, EyeOff, LogOut, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   buildAuthorizationUrl,
   exchangeOAuthCode,
@@ -18,7 +18,6 @@ import {
   type ByokProviderConfig,
   type GatewayProviderConfig,
   loadSavedConfig,
-  saveConfig,
   type ThinkingLevel,
 } from "./config";
 import { type DiscoveredModel, discoverByokModels, discoverGatewayModels } from "./model-discovery";
@@ -117,6 +116,7 @@ function ByokSettingsPanel() {
   const [discoveryMessage, setDiscoveryMessage] = useState<string | null>(null);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [manualModel, setManualModel] = useState("");
+  const discoveryGenerationRef = useRef(0);
 
   const followMode = state.providerConfig?.followMode ?? savedByok?.followMode ?? true;
   const isCustom = provider === "custom";
@@ -141,8 +141,6 @@ function ByokSettingsPanel() {
     };
 
     if (provider === "custom") return;
-
-    if (provider || apiKey || model) saveConfig(config);
     if (provider && apiKey && model) setProviderConfig(config);
   }, [
     provider,
@@ -160,7 +158,13 @@ function ByokSettingsPanel() {
     setProviderConfig,
   ]);
 
+  const cancelDiscovery = () => {
+    discoveryGenerationRef.current += 1;
+    setIsDiscovering(false);
+  };
+
   const invalidateDiscovery = () => {
+    cancelDiscovery();
     setModels([]);
     setModel("");
     setDiscoverySource(null);
@@ -275,6 +279,8 @@ function ByokSettingsPanel() {
   };
 
   const handleDiscoverModels = async () => {
+    const generation = discoveryGenerationRef.current + 1;
+    discoveryGenerationRef.current = generation;
     setIsDiscovering(true);
     setDiscoveryError(null);
     setDiscoveryMessage(null);
@@ -294,6 +300,7 @@ function ByokSettingsPanel() {
         customBaseUrl,
         responseStartTimeoutSeconds,
       });
+      if (generation !== discoveryGenerationRef.current) return;
       setModels(result.models);
       setDiscoverySource(result.source);
       setDiscoveryMessage(result.message ?? null);
@@ -301,9 +308,10 @@ function ByokSettingsPanel() {
         setModel(result.models[0]?.id ?? "");
       }
     } catch (err) {
+      if (generation !== discoveryGenerationRef.current) return;
       setDiscoveryError(err instanceof Error ? err.message : "Unable to discover models.");
     } finally {
-      setIsDiscovering(false);
+      if (generation === discoveryGenerationRef.current) setIsDiscovering(false);
     }
   };
 
@@ -334,7 +342,6 @@ function ByokSettingsPanel() {
       customBaseUrl: customBaseUrl.trim(),
       responseStartTimeoutSeconds,
     };
-    saveConfig(config);
     setProviderConfig(config);
   };
 
@@ -354,11 +361,13 @@ function ByokSettingsPanel() {
   const connectLabel = models.length > 0 || discoverySource ? "Refresh Models" : "Connect";
 
   const toggleProxy = () => {
+    cancelDiscovery();
     if (isCustom) clearProviderConfig();
     setUseProxy((current) => !current);
   };
 
   const changeProxyUrl = (value: string) => {
+    cancelDiscovery();
     if (isCustom) clearProviderConfig();
     setProxyUrl(value);
   };
@@ -673,6 +682,7 @@ function ByokSettingsPanel() {
               onChange={(e) => {
                 const next = Number.parseInt(e.target.value, 10);
                 if (!Number.isFinite(next) || next < 1) return;
+                cancelDiscovery();
                 if (isCustom) clearProviderConfig();
                 setResponseStartTimeoutSeconds(Math.min(3600, next));
               }}
@@ -845,6 +855,7 @@ function GatewaySettingsPanel() {
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [discoverySource, setDiscoverySource] = useState<"live" | "fallback" | null>(null);
+  const discoveryGenerationRef = useRef(0);
   const followMode = state.providerConfig?.followMode ?? savedGateway?.followMode ?? true;
 
   useEffect(() => {
@@ -857,11 +868,16 @@ function GatewaySettingsPanel() {
       responseStartTimeoutSeconds,
       ...metadataForModel(models, model),
     };
-    if (gatewayUrl || model) saveConfig(config);
     if (gatewayUrl.trim() && model) setProviderConfig(config);
   }, [gatewayUrl, model, models, followMode, responseStartTimeoutSeconds, setProviderConfig]);
 
+  const cancelDiscovery = () => {
+    discoveryGenerationRef.current += 1;
+    setIsDiscovering(false);
+  };
+
   const handleGatewayUrlChange = (value: string) => {
+    cancelDiscovery();
     clearProviderConfig();
     setGatewayUrl(value);
     setModels([]);
@@ -871,17 +887,21 @@ function GatewaySettingsPanel() {
   };
 
   const handleDiscoverModels = async () => {
+    const generation = discoveryGenerationRef.current + 1;
+    discoveryGenerationRef.current = generation;
     setIsDiscovering(true);
     setDiscoveryError(null);
     try {
       const result = await discoverGatewayModels(gatewayUrl, responseStartTimeoutSeconds);
+      if (generation !== discoveryGenerationRef.current) return;
       setModels(result.models);
       setDiscoverySource(result.source);
       if (!result.models.some((item) => item.id === model)) setModel(result.models[0]?.id ?? "");
     } catch (err) {
+      if (generation !== discoveryGenerationRef.current) return;
       setDiscoveryError(err instanceof Error ? err.message : "Unable to discover models.");
     } finally {
-      setIsDiscovering(false);
+      if (generation === discoveryGenerationRef.current) setIsDiscovering(false);
     }
   };
 
@@ -966,6 +986,7 @@ function GatewaySettingsPanel() {
               onChange={(e) => {
                 const next = Number.parseInt(e.target.value, 10);
                 if (!Number.isFinite(next) || next < 1) return;
+                cancelDiscovery();
                 setResponseStartTimeoutSeconds(Math.min(3600, next));
               }}
               className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) focus:outline-none focus:border-(--chat-border-active)"

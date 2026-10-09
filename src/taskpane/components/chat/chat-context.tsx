@@ -200,11 +200,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const sessionLoadedRef = useRef(false);
   const currentSessionIdRef = useRef<string | null>(null);
   const followModeRef = useRef(state.providerConfig?.followMode ?? true);
+  const restoredAgentMessagesRef = useRef<AgentMessage[]>([]);
 
   const availableProviders = getProviders();
 
   const handleAgentEvent = useCallback((event: AgentEvent) => {
-    console.log("[Chat] Agent event:", event.type, event);
     switch (event.type) {
       case "message_start": {
         if (event.message.role === "assistant") {
@@ -244,10 +244,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           const messageId = streamingMessageIdRef.current;
           const assistantMsg = event.message as AssistantMessage;
           const isError = assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted";
-          console.log("[Chat] Assistant message result:", event.message);
-          console.log("[Chat] Usage:", assistantMsg.usage);
-          console.log("[Chat] stopReason:", assistantMsg.stopReason, "errorMessage:", assistantMsg.errorMessage);
-
           setState((prev) => {
             const messages = [...prev.messages];
             const idx = messageId ? messages.findIndex((m) => m.id === messageId) : -1;
@@ -381,6 +377,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       case "agent_end": {
         isStreamingRef.current = false;
+        if (agentRef.current) {
+          restoredAgentMessagesRef.current = [...agentRef.current.state.messages];
+        }
         setState((prev) => ({ ...prev, isStreaming: false }));
         streamingMessageIdRef.current = null;
         break;
@@ -401,10 +400,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
     if (Date.now() < creds.expires) return creds.access;
 
-    console.log("[Chat] Refreshing OAuth token before API call...");
     const refreshed = await refreshOAuthToken(config.provider, creds.refresh, config.proxyUrl, config.useProxy);
     saveOAuthCredentials(config.provider, refreshed);
-    console.log("[Chat] OAuth token refreshed");
     return refreshed.access;
   }, []);
 
@@ -424,7 +421,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       configRef.current = config;
-      const existingMessages = agentRef.current?.state.messages ?? [];
+      const existingMessages = agentRef.current?.state.messages ?? restoredAgentMessagesRef.current;
 
       if (agentRef.current) {
         agentRef.current.abort();
@@ -484,14 +481,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       pendingConfigRef.current = null;
 
       followModeRef.current = config.followMode ?? true;
-
-      console.log("[Chat] Model info:", {
-        id: baseModel.id,
-        contextWindow: baseModel.contextWindow,
-        maxTokens: baseModel.maxTokens,
-        cost: baseModel.cost,
-        reasoning: baseModel.reasoning,
-      });
+      restoredAgentMessagesRef.current = [...existingMessages];
+      saveConfig(config);
 
       setState((prev) => ({
         ...prev,
@@ -516,15 +507,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
 
   const clearProviderConfig = useCallback(() => {
-    agentRef.current?.abort();
-    agentRef.current = null;
+    if (agentRef.current) {
+      restoredAgentMessagesRef.current = [...agentRef.current.state.messages];
+      agentRef.current.abort();
+    }
     configRef.current = null;
     pendingConfigRef.current = null;
-    isStreamingRef.current = false;
     setState((prev) => ({
       ...prev,
       providerConfig: null,
-      isStreaming: false,
       error: null,
       sessionStats: { ...prev.sessionStats, contextWindow: 0 },
     }));
@@ -532,8 +523,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const abort = useCallback(() => {
     agentRef.current?.abort();
-    isStreamingRef.current = false;
-    setState((prev) => ({ ...prev, isStreaming: false }));
   }, []);
 
   const sendMessage = useCallback(
@@ -565,9 +554,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       try {
         let promptContent = content;
         try {
-          console.log("[Chat] Fetching workbook metadata...");
           const metadata = await getWorkbookMetadata();
-          console.log("[Chat] Workbook metadata:", metadata);
           promptContent = `<wb_context>\n${JSON.stringify(metadata, null, 2)}\n</wb_context>\n\n${content}`;
 
           if (metadata.sheetsMetadata) {
@@ -581,7 +568,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           console.error("[Chat] Failed to get workbook metadata:", err);
         }
         await agent.prompt(promptContent);
-        console.log("[Chat] Full context:", agent.state.messages);
       } catch (err) {
         console.error("[Chat] sendMessage error:", err);
         isStreamingRef.current = false;
@@ -596,38 +582,56 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
 
   const clearMessages = useCallback(() => {
-    abort();
-    agentRef.current?.reset();
-    if (currentSessionIdRef.current) {
-      saveSession(currentSessionIdRef.current, []).catch(console.error);
-    }
-    setState((prev) => ({ ...prev, messages: [], error: null, sessionStats: INITIAL_STATS }));
-  }, [abort]);
+    const clear = async () => {
+      const agent = agentRef.current;
+      if (agent && isStreamingRef.current) {
+        agent.abort();
+        await agent.waitForIdle();
+      }
+
+      if (agentRef.current) {
+        agentRef.current.reset();
+        restoredAgentMessagesRef.current = [...agentRef.current.state.messages];
+      } else {
+        restoredAgentMessagesRef.current = [];
+      }
+
+      isStreamingRef.current = false;
+      if (currentSessionIdRef.current) {
+        await saveSession(currentSessionIdRef.current, [], restoredAgentMessagesRef.current);
+      }
+      setState((prev) => ({
+        ...prev,
+        messages: [],
+        isStreaming: false,
+        error: null,
+        sessionStats: INITIAL_STATS,
+      }));
+    };
+
+    void clear().catch((err) => {
+      console.error("[Chat] Failed to clear messages:", err);
+    });
+  }, []);
 
   const refreshSessions = useCallback(async () => {
     if (!workbookIdRef.current) return;
     const sessions = await listSessions(workbookIdRef.current);
-    console.log(
-      "[Chat] refreshSessions:",
-      sessions.map((s) => ({ id: s.id, name: s.name, msgs: s.messages.length })),
-    );
     setState((prev) => ({ ...prev, sessions }));
   }, []);
 
   const newSession = useCallback(async () => {
-    console.log("[Chat] newSession called, workbookId:", workbookIdRef.current);
     if (!workbookIdRef.current) {
       console.error("[Chat] Cannot create session: workbookId not set");
       return;
     }
     if (isStreamingRef.current) {
-      console.log("[Chat] newSession blocked: streaming in progress");
       return;
     }
     try {
       agentRef.current?.reset();
+      restoredAgentMessagesRef.current = agentRef.current ? [...agentRef.current.state.messages] : [];
       const session = await createSession(workbookIdRef.current);
-      console.log("[Chat] Created new session:", session.id);
       currentSessionIdRef.current = session.id;
       await refreshSessions();
       setState((prev) => ({
@@ -643,21 +647,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [refreshSessions]);
 
   const switchSession = useCallback(async (sessionId: string) => {
-    console.log("[Chat] switchSession called:", sessionId, "current:", currentSessionIdRef.current);
     if (currentSessionIdRef.current === sessionId) return;
     if (isStreamingRef.current) {
-      console.log("[Chat] switchSession blocked: streaming in progress");
       return;
     }
     agentRef.current?.reset();
     try {
       const session = await getSession(sessionId);
-      console.log("[Chat] Got session:", session?.id, "messages:", session?.messages.length);
       if (!session) {
         console.error("[Chat] Session not found:", sessionId);
         return;
       }
       currentSessionIdRef.current = session.id;
+      restoredAgentMessagesRef.current = [...session.agentMessages];
+      if (agentRef.current) {
+        agentRef.current.state.messages = restoredAgentMessagesRef.current;
+      }
       setState((prev) => ({
         ...prev,
         messages: session.messages,
@@ -673,13 +678,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const deleteCurrentSession = useCallback(async () => {
     if (!currentSessionIdRef.current || !workbookIdRef.current) return;
     if (isStreamingRef.current) {
-      console.log("[Chat] deleteCurrentSession blocked: streaming in progress");
       return;
     }
     agentRef.current?.reset();
     await deleteSession(currentSessionIdRef.current);
     const session = await getOrCreateCurrentSession(workbookIdRef.current);
     currentSessionIdRef.current = session.id;
+    restoredAgentMessagesRef.current = [...session.agentMessages];
+    if (agentRef.current) {
+      agentRef.current.state.messages = restoredAgentMessagesRef.current;
+    }
     await refreshSessions();
     setState((prev) => ({
       ...prev,
@@ -694,7 +702,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (prevStreamingRef.current && !state.isStreaming && currentSessionIdRef.current) {
       const sessionId = currentSessionIdRef.current;
-      saveSession(sessionId, state.messages)
+      const agentMessages = agentRef.current ? [...agentRef.current.state.messages] : restoredAgentMessagesRef.current;
+      restoredAgentMessagesRef.current = agentMessages;
+      saveSession(sessionId, state.messages, agentMessages)
         .then(async () => {
           await refreshSessions();
           const updated = await getSession(sessionId);
@@ -720,11 +730,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     getOrCreateWorkbookId()
       .then(async (id) => {
         workbookIdRef.current = id;
-        console.log("[Chat] Workbook ID:", id);
         const session = await getOrCreateCurrentSession(id);
         currentSessionIdRef.current = session.id;
         const sessions = await listSessions(id);
-        console.log("[Chat] Loaded session:", session.id, "with", session.messages.length, "messages");
+        restoredAgentMessagesRef.current = [...session.agentMessages];
+        if (agentRef.current && !isStreamingRef.current) {
+          agentRef.current.state.messages = restoredAgentMessagesRef.current;
+        }
         setState((prev) => ({
           ...prev,
           messages: session.messages,
@@ -755,7 +767,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const newFollowMode = !prev.providerConfig.followMode;
       followModeRef.current = newFollowMode;
       const newConfig = { ...prev.providerConfig, followMode: newFollowMode };
-      saveConfig(newConfig);
+      if (pendingConfigRef.current) {
+        pendingConfigRef.current = { ...pendingConfigRef.current, followMode: newFollowMode };
+      }
+      if (configRef.current) {
+        configRef.current = { ...configRef.current, followMode: newFollowMode };
+        saveConfig(configRef.current);
+      }
       return { ...prev, providerConfig: newConfig };
     });
   }, []);

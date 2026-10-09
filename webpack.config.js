@@ -150,17 +150,20 @@ module.exports = async (env, options) => {
             from: "assets/*",
             to: "assets/[name][ext][query]",
           },
-          {
-            from: "manifest*.xml",
-            to: "[name]" + "[ext]",
-            transform(content) {
-              if (dev) {
-                return content;
-              } else {
-                return content.toString().replace(new RegExp(urlDev, "g"), urlProd);
-              }
-            },
-          },
+          ...(dev || openExcelMode === "byok"
+            ? [
+                {
+                  from: "manifest*.xml",
+                  to: "[name]" + "[ext]",
+                  transform(content) {
+                    if (dev) {
+                      return content;
+                    }
+                    return content.toString().replace(new RegExp(urlDev, "g"), urlProd);
+                  },
+                },
+              ]
+            : []),
         ],
       }),
       new HtmlWebpackPlugin({

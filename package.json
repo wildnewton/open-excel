@@ -19,6 +19,7 @@
     "build:dev": "webpack --mode development",
     "dev-server": "webpack serve --mode development",
     "test:bridge": "node scripts/test-local-cors-bridge.js",
+    "test:review-regressions": "node scripts/test-review-regressions.js",
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",
     "format": "biome format --write src/",
