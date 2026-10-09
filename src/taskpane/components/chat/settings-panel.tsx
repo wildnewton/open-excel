@@ -12,6 +12,7 @@ import {
 } from "../../../lib/oauth";
 import { useChat } from "./chat-context";
 import {
+  API_TYPES,
   APP_MODE,
   type ByokProviderConfig,
   type GatewayProviderConfig,
@@ -78,6 +79,8 @@ function ByokSettingsPanel() {
   const [proxyUrl, setProxyUrl] = useState(() => savedByok?.proxyUrl || "");
   const [thinking, setThinking] = useState<ThinkingLevel>(() => savedByok?.thinking || "none");
   const [authMethod, setAuthMethod] = useState<"apikey" | "oauth">(() => savedByok?.authMethod || "apikey");
+  const [apiType, setApiType] = useState(() => savedByok?.apiType || "openai-completions");
+  const [customBaseUrl, setCustomBaseUrl] = useState(() => savedByok?.customBaseUrl || "");
 
   // OAuth flow state — restored from the upstream BYOK implementation.
   const [oauthFlow, setOauthFlow] = useState<OAuthFlowState>(() => {
@@ -96,6 +99,7 @@ function ByokSettingsPanel() {
   const [manualModel, setManualModel] = useState("");
 
   const followMode = state.providerConfig?.followMode ?? savedByok?.followMode ?? true;
+  const isCustom = provider === "custom";
   const hasOAuth = provider in OAUTH_PROVIDERS;
   const showApiKeyInput = !(hasOAuth && authMethod === "oauth");
 
@@ -110,12 +114,30 @@ function ByokSettingsPanel() {
       thinking,
       followMode,
       authMethod,
+      apiType,
+      customBaseUrl,
     };
 
-    // Persist the auth choice even before a model has been discovered.
-    if (provider || apiKey || model) saveConfig(config);
-    if (provider && apiKey && model) setProviderConfig(config);
-  }, [provider, apiKey, model, useProxy, proxyUrl, thinking, followMode, authMethod, setProviderConfig]);
+    // Persist settings even before the configuration is complete.
+    if (provider || apiKey || model || customBaseUrl) saveConfig(config);
+    const ready =
+      provider === "custom"
+        ? Boolean(apiKey && model && apiType && customBaseUrl.trim())
+        : Boolean(provider && apiKey && model);
+    if (ready) setProviderConfig(config);
+  }, [
+    provider,
+    apiKey,
+    model,
+    useProxy,
+    proxyUrl,
+    thinking,
+    followMode,
+    authMethod,
+    apiType,
+    customBaseUrl,
+    setProviderConfig,
+  ]);
 
   const invalidateDiscovery = () => {
     setModels([]);
@@ -129,6 +151,13 @@ function ByokSettingsPanel() {
   const handleProviderChange = (newProvider: string) => {
     setProvider(newProvider);
     invalidateDiscovery();
+
+    if (newProvider === "custom") {
+      setAuthMethod("apikey");
+      setApiKey("");
+      setOauthFlow({ step: "idle" });
+      return;
+    }
 
     const keepOAuth = newProvider in OAUTH_PROVIDERS ? authMethod : "apikey";
     setAuthMethod(keepOAuth);
@@ -212,7 +241,7 @@ function ByokSettingsPanel() {
 
   const handleApiKeyChange = (newApiKey: string) => {
     setApiKey(newApiKey);
-    invalidateDiscovery();
+    if (!isCustom) invalidateDiscovery();
   };
 
   const handleDiscoverModels = async () => {
@@ -231,6 +260,8 @@ function ByokSettingsPanel() {
         thinking,
         followMode,
         authMethod,
+        apiType,
+        customBaseUrl,
       });
       setModels(result.models);
       setDiscoverySource(result.source);
@@ -259,8 +290,9 @@ function ByokSettingsPanel() {
     activeConfig?.mode === "byok" &&
     activeConfig.provider === provider &&
     activeConfig.apiKey === apiKey &&
-    activeConfig.model === model;
-  const canDiscover = provider.length > 0 && apiKey.length > 0;
+    activeConfig.model === model &&
+    (!isCustom || (activeConfig.apiType === apiType && activeConfig.customBaseUrl === customBaseUrl));
+  const canDiscover = !isCustom && provider.length > 0 && apiKey.length > 0;
   const connectLabel = models.length > 0 || discoverySource ? "Refresh Models" : "Connect";
 
   return (
@@ -285,8 +317,58 @@ function ByokSettingsPanel() {
                   {item}
                 </option>
               ))}
+              <option disabled>──────────</option>
+              <option value="custom">Custom Endpoint</option>
             </select>
           </label>
+
+          {isCustom && (
+            <>
+              <label className="block">
+                <span className="block text-xs text-(--chat-text-secondary) mb-1.5">API Type</span>
+                <select
+                  value={apiType}
+                  onChange={(e) => setApiType(e.target.value)}
+                  className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) focus:outline-none focus:border-(--chat-border-active)"
+                  style={inputStyle}
+                >
+                  {API_TYPES.map((type) => (
+                    <option key={type.id} value={type.id}>
+                      {type.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-(--chat-text-muted) mt-1">
+                  {API_TYPES.find((type) => type.id === apiType)?.hint}
+                </p>
+              </label>
+
+              <label className="block">
+                <span className="block text-xs text-(--chat-text-secondary) mb-1.5">Base URL</span>
+                <input
+                  type="text"
+                  value={customBaseUrl}
+                  onChange={(e) => setCustomBaseUrl(e.target.value)}
+                  placeholder="https://api.openai.com/v1"
+                  className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) placeholder:text-(--chat-text-muted) focus:outline-none focus:border-(--chat-border-active)"
+                  style={inputStyle}
+                />
+                <p className="text-[10px] text-(--chat-text-muted) mt-1">The API endpoint URL for your provider</p>
+              </label>
+
+              <label className="block">
+                <span className="block text-xs text-(--chat-text-secondary) mb-1.5">Model ID</span>
+                <input
+                  type="text"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder="gpt-4o"
+                  className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) placeholder:text-(--chat-text-muted) focus:outline-none focus:border-(--chat-border-active)"
+                  style={inputStyle}
+                />
+              </label>
+            </>
+          )}
 
           {/* Auth method toggle — unchanged BYOK behavior for OAuth-capable providers. */}
           {hasOAuth && (
@@ -497,75 +579,79 @@ function ByokSettingsPanel() {
             </label>
           )}
 
-          {/* Model discovery is deliberately downstream of authentication. */}
-          <button
-            type="button"
-            disabled={!canDiscover || isDiscovering}
-            onClick={handleDiscoverModels}
-            className="w-full flex items-center justify-center gap-2 bg-(--chat-accent) text-white text-xs px-3 py-2
+          {!isCustom && (
+            <>
+              {/* Model discovery is deliberately downstream of authentication. */}
+              <button
+                type="button"
+                disabled={!canDiscover || isDiscovering}
+                onClick={handleDiscoverModels}
+                className="w-full flex items-center justify-center gap-2 bg-(--chat-accent) text-white text-xs px-3 py-2
                        disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90 transition-opacity"
-            style={inputStyle}
-          >
-            <RefreshCw size={13} className={isDiscovering ? "animate-spin" : ""} />
-            {isDiscovering ? "Connecting..." : connectLabel}
-          </button>
+                style={inputStyle}
+              >
+                <RefreshCw size={13} className={isDiscovering ? "animate-spin" : ""} />
+                {isDiscovering ? "Connecting..." : connectLabel}
+              </button>
 
-          {discoveryError && <p className="text-xs text-(--chat-error)">{discoveryError}</p>}
-          {discoveryMessage && <p className="text-[10px] text-(--chat-text-muted)">{discoveryMessage}</p>}
+              {discoveryError && <p className="text-xs text-(--chat-error)">{discoveryError}</p>}
+              {discoveryMessage && <p className="text-[10px] text-(--chat-text-muted)">{discoveryMessage}</p>}
 
-          <label className="block">
-            <span className="block text-xs text-(--chat-text-secondary) mb-1.5">Model</span>
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              disabled={models.length === 0}
-              className="w-full bg-(--chat-input-bg) text-(--chat-text-primary)
+              <label className="block">
+                <span className="block text-xs text-(--chat-text-secondary) mb-1.5">Model</span>
+                <select
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  disabled={models.length === 0}
+                  className="w-full bg-(--chat-input-bg) text-(--chat-text-primary)
                          text-sm px-3 py-2 border border-(--chat-border)
                          focus:outline-none focus:border-(--chat-border-active)
                          disabled:opacity-50 disabled:cursor-not-allowed"
-              style={inputStyle}
-            >
-              <option value="">Select model...</option>
-              {models.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-            {discoverySource === "live" && (
-              <p className="text-[10px] text-(--chat-text-muted) mt-1">
-                Models loaded live from the configured endpoint.
-              </p>
-            )}
-          </label>
+                  style={inputStyle}
+                >
+                  <option value="">Select model...</option>
+                  {models.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+                {discoverySource === "live" && (
+                  <p className="text-[10px] text-(--chat-text-muted) mt-1">
+                    Models loaded live from the configured endpoint.
+                  </p>
+                )}
+              </label>
 
-          {discoverySource === "fallback" && (
-            <div>
-              <span className="block text-xs text-(--chat-text-secondary) mb-1.5">Manual Model ID</span>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={manualModel}
-                  onChange={(e) => setManualModel(e.target.value)}
-                  placeholder="provider-model-id"
-                  className="min-w-0 flex-1 bg-(--chat-input-bg) text-(--chat-text-primary)
+              {discoverySource === "fallback" && (
+                <div>
+                  <span className="block text-xs text-(--chat-text-secondary) mb-1.5">Manual Model ID</span>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={manualModel}
+                      onChange={(e) => setManualModel(e.target.value)}
+                      placeholder="provider-model-id"
+                      className="min-w-0 flex-1 bg-(--chat-input-bg) text-(--chat-text-primary)
                              text-sm px-3 py-2 border border-(--chat-border)
                              placeholder:text-(--chat-text-muted)
                              focus:outline-none focus:border-(--chat-border-active)"
-                  style={inputStyle}
-                />
-                <button
-                  type="button"
-                  onClick={useManualModel}
-                  disabled={!manualModel.trim()}
-                  className="px-3 py-2 text-xs border border-(--chat-border) text-(--chat-text-secondary)
+                      style={inputStyle}
+                    />
+                    <button
+                      type="button"
+                      onClick={useManualModel}
+                      disabled={!manualModel.trim()}
+                      className="px-3 py-2 text-xs border border-(--chat-border) text-(--chat-text-secondary)
                              hover:border-(--chat-border-active) disabled:opacity-50 disabled:cursor-not-allowed"
-                  style={inputStyle}
-                >
-                  Use
-                </button>
-              </div>
-            </div>
+                      style={inputStyle}
+                    >
+                      Use
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           <ThinkingSelector value={thinking} onChange={setThinking} />
@@ -582,7 +668,9 @@ function ByokSettingsPanel() {
               </span>
             </>
           ) : (
-            <span className="text-(--chat-text-muted)">Authenticate, connect, and select a model</span>
+            <span className="text-(--chat-text-muted)">
+              {isCustom ? "Enter endpoint, model, and API key" : "Authenticate, connect, and select a model"}
+            </span>
           )}
         </div>
       </div>

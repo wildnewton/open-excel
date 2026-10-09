@@ -1,3 +1,4 @@
+const http = require("http");
 const https = require("https");
 const net = require("net");
 const { execFileSync } = require("child_process");
@@ -42,13 +43,23 @@ function isPrivateIpv4(hostname) {
   );
 }
 
+function isLoopbackTarget(hostname) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
 function isDisallowedTarget(target) {
   const hostname = target.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const loopback = isLoopbackTarget(hostname);
+
+  // Local model servers (Ollama / LM Studio) commonly expose plain HTTP.
+  // Permit HTTP only on loopback. Public targets must remain HTTPS.
+  if (target.protocol === "http:") return !loopback;
   if (target.protocol !== "https:") return true;
-  if (hostname === "localhost" || hostname.endsWith(".local")) return true;
+  if (loopback) return false;
+  if (hostname.endsWith(".local")) return true;
   if (net.isIPv4(hostname)) return isPrivateIpv4(hostname);
   if (net.isIPv6(hostname)) {
-    return hostname === "::1" || hostname.startsWith("fc") || hostname.startsWith("fd") || hostname.startsWith("fe8") || hostname.startsWith("fe9") || hostname.startsWith("fea") || hostname.startsWith("feb");
+    return hostname.startsWith("fc") || hostname.startsWith("fd") || hostname.startsWith("fe8") || hostname.startsWith("fe9") || hostname.startsWith("fea") || hostname.startsWith("feb");
   }
   return false;
 }
@@ -160,12 +171,15 @@ function createLocalCorsBridgeMiddleware() {
       return;
     }
 
-    const upstreamRequest = https.request(
+    const loopback = isLoopbackTarget(target.hostname.toLowerCase().replace(/^\[|\]$/g, ""));
+    const transport = target.protocol === "http:" ? http : https;
+    const upstreamRequest = transport.request(
       target,
       {
         method,
         headers: copyRequestHeaders(request.headers),
-        agent,
+        // Local endpoints should never be sent through the machine's outbound proxy.
+        agent: loopback ? undefined : agent,
       },
       (upstreamResponse) => {
         response.statusCode = upstreamResponse.statusCode || 502;

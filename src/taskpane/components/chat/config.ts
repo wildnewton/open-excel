@@ -12,6 +12,8 @@ export interface ByokProviderConfig {
   thinking: ThinkingLevel;
   followMode: boolean;
   authMethod?: "apikey" | "oauth";
+  apiType?: string;
+  customBaseUrl?: string;
 }
 
 export interface GatewayProviderConfig {
@@ -25,6 +27,41 @@ export interface GatewayProviderConfig {
 export type ProviderConfig = ByokProviderConfig | GatewayProviderConfig;
 
 export const APP_MODE: ProviderConfig["mode"] = __OPENEXCEL_MODE__;
+
+export const API_TYPES = [
+  {
+    id: "openai-completions",
+    name: "OpenAI Completions",
+    hint: "Most compatible — Ollama, vLLM, LMStudio, etc.",
+  },
+  {
+    id: "openai-responses",
+    name: "OpenAI Responses",
+    hint: "Newer OpenAI API format",
+  },
+  { id: "anthropic-messages", name: "Anthropic Messages", hint: "Claude API" },
+  {
+    id: "google-generative-ai",
+    name: "Google Generative AI",
+    hint: "Gemini API",
+  },
+  {
+    id: "azure-openai-responses",
+    name: "Azure OpenAI Responses",
+    hint: "Azure-hosted OpenAI",
+  },
+  {
+    id: "openai-codex-responses",
+    name: "OpenAI Codex Responses",
+    hint: "ChatGPT subscription models",
+  },
+  {
+    id: "google-gemini-cli",
+    name: "Google Gemini CLI",
+    hint: "Cloud Code Assist",
+  },
+  { id: "google-vertex", name: "Google Vertex AI", hint: "Vertex AI endpoint" },
+] as const;
 
 const BYOK_STORAGE_KEY = "openexcel-provider-config";
 const GATEWAY_STORAGE_KEY = "openexcel-gateway-config";
@@ -69,6 +106,8 @@ export function loadSavedConfig(): ProviderConfig | null {
       thinking: parseThinkingLevel(parsed.thinking),
       followMode: typeof parsed.followMode === "boolean" ? parsed.followMode : true,
       authMethod,
+      apiType: typeof parsed.apiType === "string" ? parsed.apiType : "openai-completions",
+      customBaseUrl: typeof parsed.customBaseUrl === "string" ? parsed.customBaseUrl : "",
     };
   } catch {
     return null;
@@ -83,5 +122,8 @@ export function saveConfig(config: ProviderConfig): void {
 export function isConfigReady(config: ProviderConfig | null): config is ProviderConfig {
   if (!config?.model) return false;
   if (config.mode === "gateway") return config.gatewayUrl.trim().length > 0;
+  if (config.provider === "custom") {
+    return Boolean(config.apiKey.trim() && config.apiType?.trim() && config.customBaseUrl?.trim());
+  }
   return config.provider.trim().length > 0 && config.apiKey.trim().length > 0;
 }

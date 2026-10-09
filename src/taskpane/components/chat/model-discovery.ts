@@ -337,6 +337,25 @@ export async function discoverGatewayModels(gatewayUrl: string): Promise<ModelDi
   return { models, source: "live" };
 }
 
+function createCustomByokModel(config: ByokProviderConfig): Model<any> {
+  if (!config.apiType?.trim() || !config.customBaseUrl?.trim() || !config.model.trim()) {
+    throw new Error("Custom endpoint requires API type, Base URL, and Model ID.");
+  }
+
+  return {
+    id: config.model,
+    name: config.model,
+    api: config.apiType as any,
+    provider: "custom",
+    baseUrl: trimTrailingSlash(config.customBaseUrl.trim()),
+    reasoning: true,
+    input: ["text", "image"],
+    cost: ZERO_COST,
+    contextWindow: 128000,
+    maxTokens: 32000,
+  } as Model<any>;
+}
+
 function createUnknownByokModel(config: ByokProviderConfig): Model<any> {
   const template = providerTemplate(config.provider);
   if (!template) throw new Error(`No model template is available for provider ${config.provider}.`);
@@ -378,6 +397,7 @@ function createGatewayModel(config: GatewayProviderConfig): Model<any> {
 
 export function resolveConfiguredModel(config: ProviderConfig): Model<any> {
   if (config.mode === "gateway") return createGatewayModel(config);
+  if (config.provider === "custom") return createCustomByokModel(config);
   return builtInModel(config.provider, config.model) ?? createUnknownByokModel(config);
 }
 
