@@ -27,6 +27,9 @@ jobs:
       - name: Local bridge smoke test
         run: pnpm test:bridge
 
+      - name: Review regression checks
+        run: pnpm test:review-regressions
+
       - name: Type check
         run: pnpm typecheck
 
