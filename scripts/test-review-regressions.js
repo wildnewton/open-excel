@@ -34,6 +34,17 @@ assert.match(chat, /waitForIdle\(\)/, "Reset after abort must wait for the Agent
 assert.match(chat, /suppressNextSessionSaveRef/, "Clear must suppress the stale post-abort autosave race");
 assert.match(chat, /restoreSessionAgentMessages/, "Legacy or empty sessions must preserve the Agent system baseline");
 assert.match(chat, /agentMessages\[agentMessages.length - 1\] === event.message/, "Error/aborted UI and Agent histories must stay aligned");
+const newSessionSection = section(chat, "const newSession", "const switchSession");
+assert.ok(
+  newSessionSection.indexOf("createSession(") < newSessionSection.indexOf("agentRef.current?.reset()"),
+  "New-session storage must succeed before clearing the active transcript",
+);
+const deleteSessionSection = section(chat, "const deleteCurrentSession", "const prevStreamingRef");
+assert.equal(
+  deleteSessionSection.includes("agentRef.current?.reset()"),
+  false,
+  "Delete must not clear the active transcript before storage succeeds",
+);
 
 assert.match(storage, /agentMessages: AgentMessage\[\]/, "Sessions must persist provider-native agent messages");
 assert.match(discovery, /reasoning: true,[\s\S]*input: \["text", "image"\]/, "Custom Endpoint capabilities regressed");

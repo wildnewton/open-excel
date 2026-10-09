@@ -656,9 +656,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       return;
     }
     try {
+      const session = await createSession(workbookIdRef.current);
       agentRef.current?.reset();
       restoredAgentMessagesRef.current = agentRef.current ? [...agentRef.current.state.messages] : [];
-      const session = await createSession(workbookIdRef.current);
       currentSessionIdRef.current = session.id;
       await refreshSessions();
       setState((prev) => ({
@@ -706,7 +706,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     if (isStreamingRef.current) {
       return;
     }
-    agentRef.current?.reset();
     await deleteSession(currentSessionIdRef.current);
     const session = await getOrCreateCurrentSession(workbookIdRef.current);
     currentSessionIdRef.current = session.id;
