@@ -245,6 +245,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           const messageId = streamingMessageIdRef.current;
           const assistantMsg = event.message as AssistantMessage;
           const isError = assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted";
+          if (isError && agentRef.current) {
+            const agentMessages = agentRef.current.state.messages;
+            if (agentMessages[agentMessages.length - 1] === event.message) {
+              agentRef.current.state.messages = agentMessages.slice(0, -1);
+            }
+          }
           setState((prev) => {
             const messages = [...prev.messages];
             const idx = messageId ? messages.findIndex((m) => m.id === messageId) : -1;
@@ -526,6 +532,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     agentRef.current?.abort();
   }, []);
 
+  const restoreSessionAgentMessages = useCallback((messages: AgentMessage[]) => {
+    const agent = agentRef.current;
+    if (messages.length > 0) {
+      restoredAgentMessagesRef.current = [...messages];
+      if (agent) agent.state.messages = restoredAgentMessagesRef.current;
+      return;
+    }
+
+    if (agent) {
+      agent.reset();
+      restoredAgentMessagesRef.current = [...agent.state.messages];
+    } else {
+      restoredAgentMessagesRef.current = [];
+    }
+  }, []);
+
   const sendMessage = useCallback(
     async (content: string) => {
       if (pendingConfigRef.current) {
@@ -651,34 +673,33 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, [refreshSessions]);
 
-  const switchSession = useCallback(async (sessionId: string) => {
-    if (currentSessionIdRef.current === sessionId) return;
-    if (isStreamingRef.current) {
-      return;
-    }
-    agentRef.current?.reset();
-    try {
-      const session = await getSession(sessionId);
-      if (!session) {
-        console.error("[Chat] Session not found:", sessionId);
+  const switchSession = useCallback(
+    async (sessionId: string) => {
+      if (currentSessionIdRef.current === sessionId) return;
+      if (isStreamingRef.current) {
         return;
       }
-      currentSessionIdRef.current = session.id;
-      restoredAgentMessagesRef.current = [...session.agentMessages];
-      if (agentRef.current) {
-        agentRef.current.state.messages = restoredAgentMessagesRef.current;
+      try {
+        const session = await getSession(sessionId);
+        if (!session) {
+          console.error("[Chat] Session not found:", sessionId);
+          return;
+        }
+        currentSessionIdRef.current = session.id;
+        restoreSessionAgentMessages(session.agentMessages);
+        setState((prev) => ({
+          ...prev,
+          messages: session.messages,
+          currentSession: session,
+          error: null,
+          sessionStats: INITIAL_STATS,
+        }));
+      } catch (err) {
+        console.error("[Chat] Failed to switch session:", err);
       }
-      setState((prev) => ({
-        ...prev,
-        messages: session.messages,
-        currentSession: session,
-        error: null,
-        sessionStats: INITIAL_STATS,
-      }));
-    } catch (err) {
-      console.error("[Chat] Failed to switch session:", err);
-    }
-  }, []);
+    },
+    [restoreSessionAgentMessages],
+  );
 
   const deleteCurrentSession = useCallback(async () => {
     if (!currentSessionIdRef.current || !workbookIdRef.current) return;
@@ -689,10 +710,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     await deleteSession(currentSessionIdRef.current);
     const session = await getOrCreateCurrentSession(workbookIdRef.current);
     currentSessionIdRef.current = session.id;
-    restoredAgentMessagesRef.current = [...session.agentMessages];
-    if (agentRef.current) {
-      agentRef.current.state.messages = restoredAgentMessagesRef.current;
-    }
+    restoreSessionAgentMessages(session.agentMessages);
     await refreshSessions();
     setState((prev) => ({
       ...prev,
@@ -701,7 +719,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       error: null,
       sessionStats: INITIAL_STATS,
     }));
-  }, [refreshSessions]);
+  }, [refreshSessions, restoreSessionAgentMessages]);
 
   const prevStreamingRef = useRef(false);
   useEffect(() => {
@@ -744,9 +762,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         const session = await getOrCreateCurrentSession(id);
         currentSessionIdRef.current = session.id;
         const sessions = await listSessions(id);
-        restoredAgentMessagesRef.current = [...session.agentMessages];
-        if (agentRef.current && !isStreamingRef.current) {
-          agentRef.current.state.messages = restoredAgentMessagesRef.current;
+        if (!isStreamingRef.current) {
+          restoreSessionAgentMessages(session.agentMessages);
+        } else {
+          restoredAgentMessagesRef.current = [...session.agentMessages];
         }
         setState((prev) => ({
           ...prev,
@@ -758,7 +777,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       .catch((err) => {
         console.error("[Chat] Failed to load session:", err);
       });
-  }, []);
+  }, [restoreSessionAgentMessages]);
 
   useEffect(() => {
     const saved = loadSavedConfig();
