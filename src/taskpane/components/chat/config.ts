@@ -98,7 +98,7 @@ export function loadSavedConfig(): ProviderConfig | null {
         mode: "gateway",
         gatewayUrl: typeof parsed.gatewayUrl === "string" ? parsed.gatewayUrl : "",
         model: typeof parsed.model === "string" ? parsed.model : "",
-        thinking: parseThinkingLevel(parsed.thinking),
+        thinking: "none",
         followMode: typeof parsed.followMode === "boolean" ? parsed.followMode : true,
         responseStartTimeoutSeconds: normalizeResponseStartTimeoutSeconds(
           parsed.responseStartTimeoutSeconds ?? DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
