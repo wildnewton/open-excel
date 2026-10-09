@@ -180,7 +180,7 @@ POST /v1/chat/completions
 
 `/v1/chat/completions` must support streaming and OpenAI-compatible tool/function calling so the existing Excel agent loop can continue executing spreadsheet tools.
 
-The gateway build does not ask the user for a provider API key. Provider selection, upstream credentials, routing, user authorization, quotas, and the model catalog are gateway responsibilities.
+Gateway mode intentionally connects directly from the Office taskpane rather than using the BYOK/local CORS proxy. The gateway must therefore be reachable over HTTPS and permit CORS from the add-in origin. The add-in does not send a provider API key or plugin-generated `Authorization` header in gateway mode; enterprise identity, authorization, provider credentials, routing, quotas, and the model catalog remain gateway responsibilities.
 
 ### Persistence
 
