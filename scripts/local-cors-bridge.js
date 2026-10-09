@@ -7,6 +7,8 @@ const { HttpsProxyAgent } = require("https-proxy-agent");
 
 const BRIDGE_PATH = "/__openexcel_bridge";
 const CUSTOM_ENDPOINT_HEADER = "x-openexcel-custom-endpoint";
+const DNS_CLASSIFICATION_TIMEOUT_MS = 2000;
+const UPSTREAM_HEADER_TIMEOUT_MS = 60000;
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
   "keep-alive",
@@ -73,8 +75,13 @@ async function resolvesToPrivateNetwork(hostname) {
   if (net.isIP(normalized)) return isPrivateAddress(normalized);
 
   try {
-    const addresses = await dns.promises.lookup(normalized, { all: true });
-    return addresses.some(({ address }) => isPrivateAddress(address));
+    const lookup = dns.promises.lookup(normalized, { all: true }).then((addresses) =>
+      addresses.some(({ address }) => isPrivateAddress(address)),
+    );
+    const timeout = new Promise((resolve) => {
+      setTimeout(() => resolve(false), DNS_CLASSIFICATION_TIMEOUT_MS);
+    });
+    return await Promise.race([lookup, timeout]);
   } catch {
     return false;
   }
@@ -151,6 +158,10 @@ function copyResponseHeaders(upstream, response, route) {
   response.setHeader("X-OpenExcel-Bridge-Route", route);
 }
 
+function createRequestId() {
+  return Math.random().toString(36).slice(2, 8);
+}
+
 function createLocalCorsBridgeMiddleware() {
   const outboundProxy = detectOutboundProxy();
   let agent;
@@ -199,8 +210,16 @@ function createLocalCorsBridgeMiddleware() {
       }
 
       const trustedCustomEndpoint = isTrustedCustomEndpointRequest(request);
-      const privateNetwork = await resolvesToPrivateNetwork(target.hostname);
-      const loopback = isLoopbackTarget(target.hostname.toLowerCase().replace(/^\[|\]$/g, ""));
+      const normalizedHostname = target.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+      const loopback = isLoopbackTarget(normalizedHostname);
+
+      // A trusted plain-HTTP Custom Endpoint is always sent directly. Do not do a
+      // preflight DNS classification first: that extra resolver call is unnecessary
+      // for routing and can leave the browser request pending when local DNS is slow.
+      let privateNetwork = loopback;
+      if (!(trustedCustomEndpoint && target.protocol === "http:") && !loopback) {
+        privateNetwork = await resolvesToPrivateNetwork(target.hostname);
+      }
 
       // Generic provider proxying stays locked to public HTTPS (plus historical
       // loopback support). Private/LAN or plain HTTP is permitted only when the
@@ -230,7 +249,16 @@ function createLocalCorsBridgeMiddleware() {
       // HTTP Custom Endpoints are also direct because HttpsProxyAgent is not the
       // right transport for them. Public HTTPS keeps the existing proxy behavior.
       const direct = loopback || (trustedCustomEndpoint && (privateNetwork || target.protocol === "http:"));
+      const route = direct || !agent ? "direct" : "system-proxy";
       const transport = target.protocol === "http:" ? http : https;
+      const requestId = createRequestId();
+      const startedAt = Date.now();
+
+      console.log(
+        `[OpenExcel bridge:${requestId}] start method=${method} protocol=${target.protocol.slice(0, -1)} custom=${trustedCustomEndpoint ? "yes" : "no"} route=${route}`,
+      );
+
+      let headerTimer;
       const upstreamRequest = transport.request(
         target,
         {
@@ -239,20 +267,60 @@ function createLocalCorsBridgeMiddleware() {
           agent: direct ? undefined : agent,
         },
         (upstreamResponse) => {
+          if (headerTimer) clearTimeout(headerTimer);
+          console.log(
+            `[OpenExcel bridge:${requestId}] headers status=${upstreamResponse.statusCode || 502} after=${Date.now() - startedAt}ms`,
+          );
           response.statusCode = upstreamResponse.statusCode || 502;
           if (upstreamResponse.statusMessage) response.statusMessage = upstreamResponse.statusMessage;
-          copyResponseHeaders(upstreamResponse, response, direct || !agent ? "direct" : "system-proxy");
+          copyResponseHeaders(upstreamResponse, response, route);
+
+          upstreamResponse.on("error", (error) => {
+            console.warn(
+              `[OpenExcel bridge:${requestId}] upstream response error after=${Date.now() - startedAt}ms: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            if (!response.destroyed) response.destroy(error);
+          });
+          upstreamResponse.on("aborted", () => {
+            console.warn(`[OpenExcel bridge:${requestId}] upstream response aborted after=${Date.now() - startedAt}ms`);
+            if (!response.destroyed) response.destroy();
+          });
           upstreamResponse.pipe(response);
         },
       );
 
+      headerTimer = setTimeout(() => {
+        const timeoutError = new Error(`Timed out waiting for upstream response headers after ${UPSTREAM_HEADER_TIMEOUT_MS}ms`);
+        timeoutError.code = "OPENEXCEL_UPSTREAM_HEADER_TIMEOUT";
+        upstreamRequest.destroy(timeoutError);
+      }, UPSTREAM_HEADER_TIMEOUT_MS);
+
       upstreamRequest.on("error", (error) => {
-        if (!response.headersSent) {
-          response.statusCode = 502;
-          response.setHeader("Content-Type", "text/plain; charset=utf-8");
-          response.setHeader("X-OpenExcel-Bridge-Route", direct || !agent ? "direct" : "system-proxy");
+        if (headerTimer) clearTimeout(headerTimer);
+        console.warn(
+          `[OpenExcel bridge:${requestId}] request failed after=${Date.now() - startedAt}ms: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        if (response.headersSent) {
+          if (!response.destroyed) response.destroy(error);
+          return;
         }
+        response.statusCode = error?.code === "OPENEXCEL_UPSTREAM_HEADER_TIMEOUT" ? 504 : 502;
+        response.setHeader("Content-Type", "text/plain; charset=utf-8");
+        response.setHeader("Cache-Control", "no-store");
+        response.setHeader("X-OpenExcel-Bridge", "local-dev");
+        response.setHeader("X-OpenExcel-Bridge-Route", route);
         response.end(`OpenExcel local bridge failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+
+      request.on("aborted", () => {
+        if (headerTimer) clearTimeout(headerTimer);
+        upstreamRequest.destroy();
+      });
+      response.on("close", () => {
+        if (!response.writableEnded) {
+          if (headerTimer) clearTimeout(headerTimer);
+          upstreamRequest.destroy();
+        }
       });
 
       request.pipe(upstreamRequest);
