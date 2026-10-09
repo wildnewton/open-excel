@@ -123,7 +123,7 @@ export function isConfigReady(config: ProviderConfig | null): config is Provider
   if (!config?.model) return false;
   if (config.mode === "gateway") return config.gatewayUrl.trim().length > 0;
   if (config.provider === "custom") {
-    return Boolean(config.apiKey.trim() && config.apiType?.trim() && config.customBaseUrl?.trim());
+    return Boolean(config.apiType?.trim() && config.customBaseUrl?.trim());
   }
   return config.provider.trim().length > 0 && config.apiKey.trim().length > 0;
 }

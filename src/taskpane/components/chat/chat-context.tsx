@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import type { ReactNode } from "react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { buildCorsProxyUrl } from "../../../lib/cors-proxy";
+import { buildCorsProxyUrl, createCorsProxyFetch } from "../../../lib/cors-proxy";
 import type { DirtyRange } from "../../../lib/dirty-tracker";
 import { getWorkbookMetadata, navigateTo } from "../../../lib/excel/api";
 import { loadOAuthCredentials, refreshOAuthToken, saveOAuthCredentials } from "../../../lib/oauth";
@@ -76,7 +76,9 @@ function parseDirtyRanges(result: string | undefined): DirtyRange[] | null {
 }
 
 function applyProxyToModel(model: Model<any>, config: ProviderConfig): Model<any> {
-  if (config.mode !== "byok" || !model.baseUrl) return model;
+  // Custom Endpoint must keep its real base URL so the provider SDK can append
+  // /chat/completions, /responses, etc. first. Its final URL is proxied in fetch.
+  if (config.mode !== "byok" || config.provider === "custom" || !model.baseUrl) return model;
   return {
     ...model,
     baseUrl: buildCorsProxyUrl(model.baseUrl, config),
@@ -448,11 +450,31 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         },
         streamFn: async (model, context, options) => {
           const cfg = configRef.current ?? config;
-          const apiKey = await getActiveApiKey(cfg);
-          return streamSimple(model, context, {
-            ...options,
-            apiKey,
-          });
+          let apiKey = await getActiveApiKey(cfg);
+          const streamOptions: Record<string, unknown> = { ...options, apiKey };
+
+          if (cfg.mode === "byok" && cfg.provider === "custom") {
+            const noAuthentication = !cfg.apiKey.trim();
+            if (noAuthentication) {
+              // pi-ai/OpenAI-compatible adapters require a non-empty client key
+              // structurally. Suppress the actual auth headers in the request.
+              apiKey = "openexcel-custom-no-auth";
+              streamOptions.apiKey = apiKey;
+              streamOptions.headers = {
+                ...((options as { headers?: Record<string, string | null> }).headers ?? {}),
+                authorization: null,
+                "api-key": null,
+                "x-api-key": null,
+              };
+            }
+
+            streamOptions.fetch = createCorsProxyFetch(cfg, {
+              customEndpoint: true,
+              omitAuthentication: noAuthentication,
+            });
+          }
+
+          return streamSimple(model, context, streamOptions as any);
         },
       });
       agentRef.current = agent;

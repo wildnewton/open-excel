@@ -290,7 +290,7 @@ function ByokSettingsPanel() {
     setModel(id);
   };
 
-  const customReady = Boolean(apiKey.trim() && model.trim() && apiType.trim() && customBaseUrl.trim());
+  const customReady = Boolean(model.trim() && apiType.trim() && customBaseUrl.trim());
 
   const applyCustomEndpoint = () => {
     if (!customReady) return;
@@ -546,13 +546,17 @@ function ByokSettingsPanel() {
           {/* API Key input — hidden when using OAuth, matching upstream. */}
           {showApiKeyInput && (
             <label className="block">
-              <span className="block text-xs text-(--chat-text-secondary) mb-1.5">API Key</span>
+              <span className="block text-xs text-(--chat-text-secondary) mb-1.5">
+                API Key{isCustom ? " (optional)" : ""}
+              </span>
               <div className="relative">
                 <input
                   type={showKey ? "text" : "password"}
                   value={apiKey}
                   onChange={(e) => handleApiKeyChange(e.target.value)}
-                  placeholder="Enter your API key"
+                  placeholder={
+                    isCustom ? "Optional — leave blank if the endpoint does not require auth" : "Enter your API key"
+                  }
                   className="w-full bg-(--chat-input-bg) text-(--chat-text-primary)
                              text-sm px-3 py-2 pr-10 border border-(--chat-border)
                              placeholder:text-(--chat-text-muted)
@@ -611,6 +615,12 @@ function ByokSettingsPanel() {
               <p className="text-[10px] text-(--chat-text-muted) mt-1">
                 Not a system/Clash proxy. Leave blank for the local development bridge.
               </p>
+              {isCustom && (
+                <p className="text-[10px] text-(--chat-text-muted) mt-1">
+                  HTTP Custom Endpoints use the local bridge automatically in local development to avoid Excel/WebView
+                  mixed-content blocking.
+                </p>
+              )}
             </label>
           )}
 
@@ -726,7 +736,7 @@ function ByokSettingsPanel() {
               {isCustom
                 ? customReady
                   ? "Custom Endpoint is not active yet — click Apply Custom Endpoint"
-                  : "Enter endpoint, model, and API key"
+                  : "Enter endpoint and model (API key is optional)"
                 : "Authenticate, connect, and select a model"}
             </span>
           )}

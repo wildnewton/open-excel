@@ -1,10 +1,12 @@
 const http = require("http");
 const https = require("https");
 const net = require("net");
+const dns = require("dns");
 const { execFileSync } = require("child_process");
 const { HttpsProxyAgent } = require("https-proxy-agent");
 
 const BRIDGE_PATH = "/__openexcel_bridge";
+const CUSTOM_ENDPOINT_HEADER = "x-openexcel-custom-endpoint";
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
   "keep-alive",
@@ -21,6 +23,7 @@ const REQUEST_HEADERS_TO_DROP = new Set([
   "origin",
   "referer",
   "cookie",
+  CUSTOM_ENDPOINT_HEADER,
   "sec-fetch-dest",
   "sec-fetch-mode",
   "sec-fetch-site",
@@ -43,25 +46,54 @@ function isPrivateIpv4(hostname) {
   );
 }
 
+function isPrivateIpv6(hostname) {
+  const value = hostname.toLowerCase();
+  return (
+    value === "::1" ||
+    value.startsWith("fc") ||
+    value.startsWith("fd") ||
+    value.startsWith("fe8") ||
+    value.startsWith("fe9") ||
+    value.startsWith("fea") ||
+    value.startsWith("feb")
+  );
+}
+
 function isLoopbackTarget(hostname) {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
 
-function isDisallowedTarget(target) {
-  const hostname = target.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  const loopback = isLoopbackTarget(hostname);
+function isPrivateAddress(address) {
+  return net.isIPv4(address) ? isPrivateIpv4(address) : net.isIPv6(address) ? isPrivateIpv6(address) : false;
+}
 
-  // Local model servers (Ollama / LM Studio) commonly expose plain HTTP.
-  // Permit HTTP only on loopback. Public targets must remain HTTPS.
-  if (target.protocol === "http:") return !loopback;
-  if (target.protocol !== "https:") return true;
-  if (loopback) return false;
-  if (hostname.endsWith(".local")) return true;
-  if (net.isIPv4(hostname)) return isPrivateIpv4(hostname);
-  if (net.isIPv6(hostname)) {
-    return hostname.startsWith("fc") || hostname.startsWith("fd") || hostname.startsWith("fe8") || hostname.startsWith("fe9") || hostname.startsWith("fea") || hostname.startsWith("feb");
+async function resolvesToPrivateNetwork(hostname) {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (isLoopbackTarget(normalized) || normalized.endsWith(".local")) return true;
+  if (net.isIP(normalized)) return isPrivateAddress(normalized);
+
+  try {
+    const addresses = await dns.promises.lookup(normalized, { all: true });
+    return addresses.some(({ address }) => isPrivateAddress(address));
+  } catch {
+    return false;
   }
-  return false;
+}
+
+function isTrustedCustomEndpointRequest(request) {
+  if (request.headers[CUSTOM_ENDPOINT_HEADER] !== "1") return false;
+  const host = String(request.headers.host || "").toLowerCase();
+  if (!(host.startsWith("localhost:") || host.startsWith("127.0.0.1:") || host === "localhost" || host === "127.0.0.1")) {
+    return false;
+  }
+
+  // Sec-Fetch-Site is browser-controlled and cannot be forged by page JS.
+  if (request.headers["sec-fetch-site"] === "same-origin") return true;
+
+  const expectedOrigin = `https://${host}`;
+  if (request.headers.origin === expectedOrigin) return true;
+  const referer = String(request.headers.referer || "");
+  return referer.startsWith(`${expectedOrigin}/`);
 }
 
 function parseMacSystemProxy() {
@@ -69,7 +101,7 @@ function parseMacSystemProxy() {
   try {
     const output = execFileSync("/usr/sbin/scutil", ["--proxy"], { encoding: "utf8" });
     const value = (key) => {
-      const match = output.match(new RegExp(`^\\s*${key}\\s*:\\s*(.+?)\\s*$`, "m"));
+      const match = output.match(new RegExp(`^\\s*${key}\\s*:\s*(.+?)\\s*$`, "m"));
       return match?.[1]?.trim() || null;
     };
 
@@ -109,13 +141,14 @@ function copyRequestHeaders(headers) {
   return result;
 }
 
-function copyResponseHeaders(upstream, response) {
+function copyResponseHeaders(upstream, response, route) {
   for (const [name, value] of Object.entries(upstream.headers)) {
     if (value === undefined || RESPONSE_HEADERS_TO_DROP.has(name.toLowerCase())) continue;
     response.setHeader(name, value);
   }
   response.setHeader("Cache-Control", "no-store");
   response.setHeader("X-OpenExcel-Bridge", "local-dev");
+  response.setHeader("X-OpenExcel-Bridge-Route", route);
 }
 
 function createLocalCorsBridgeMiddleware() {
@@ -133,72 +166,112 @@ function createLocalCorsBridgeMiddleware() {
   }
 
   return (request, response, next) => {
-    let requestUrl;
-    try {
-      requestUrl = new URL(request.url, "https://localhost");
-    } catch {
-      return next();
-    }
+    const handle = async () => {
+      let requestUrl;
+      try {
+        requestUrl = new URL(request.url, "https://localhost");
+      } catch {
+        return next();
+      }
 
-    if (requestUrl.pathname !== BRIDGE_PATH) return next();
+      if (requestUrl.pathname !== BRIDGE_PATH) return next();
 
-    const rawTarget = requestUrl.searchParams.get("url");
-    if (!rawTarget) {
-      response.statusCode = 400;
-      response.end("Missing url query parameter");
-      return;
-    }
+      const rawTarget = requestUrl.searchParams.get("url");
+      if (!rawTarget) {
+        response.statusCode = 400;
+        response.end("Missing url query parameter");
+        return;
+      }
 
-    let target;
-    try {
-      target = new URL(rawTarget);
-    } catch {
-      response.statusCode = 400;
-      response.end("Invalid target URL");
-      return;
-    }
+      let target;
+      try {
+        target = new URL(rawTarget);
+      } catch {
+        response.statusCode = 400;
+        response.end("Invalid target URL");
+        return;
+      }
 
-    if (isDisallowedTarget(target)) {
-      response.statusCode = 403;
-      response.end("Local CORS bridge only allows public HTTPS targets");
-      return;
-    }
+      if (target.protocol !== "http:" && target.protocol !== "https:") {
+        response.statusCode = 403;
+        response.end("Local CORS bridge only supports HTTP(S) targets");
+        return;
+      }
 
-    const method = (request.method || "GET").toUpperCase();
-    if (!["GET", "POST", "HEAD"].includes(method)) {
-      response.statusCode = 405;
-      response.end("Method not allowed");
-      return;
-    }
+      const trustedCustomEndpoint = isTrustedCustomEndpointRequest(request);
+      const privateNetwork = await resolvesToPrivateNetwork(target.hostname);
+      const loopback = isLoopbackTarget(target.hostname.toLowerCase().replace(/^\[|\]$/g, ""));
 
-    const loopback = isLoopbackTarget(target.hostname.toLowerCase().replace(/^\[|\]$/g, ""));
-    const transport = target.protocol === "http:" ? http : https;
-    const upstreamRequest = transport.request(
-      target,
-      {
-        method,
-        headers: copyRequestHeaders(request.headers),
-        // Local endpoints should never be sent through the machine's outbound proxy.
-        agent: loopback ? undefined : agent,
-      },
-      (upstreamResponse) => {
-        response.statusCode = upstreamResponse.statusCode || 502;
-        if (upstreamResponse.statusMessage) response.statusMessage = upstreamResponse.statusMessage;
-        copyResponseHeaders(upstreamResponse, response);
-        upstreamResponse.pipe(response);
-      },
-    );
+      // Generic provider proxying stays locked to public HTTPS (plus historical
+      // loopback support). Private/LAN or plain HTTP is permitted only when the
+      // request is explicitly marked as a Custom Endpoint request from this
+      // same-origin taskpane.
+      if (!trustedCustomEndpoint) {
+        if (target.protocol === "http:" && !loopback) {
+          response.statusCode = 403;
+          response.end("Plain HTTP targets are only allowed for trusted Custom Endpoints");
+          return;
+        }
+        if (privateNetwork && !loopback) {
+          response.statusCode = 403;
+          response.end("Private-network targets are only allowed for trusted Custom Endpoints");
+          return;
+        }
+      }
 
-    upstreamRequest.on("error", (error) => {
+      const method = (request.method || "GET").toUpperCase();
+      if (!["GET", "POST", "HEAD"].includes(method)) {
+        response.statusCode = 405;
+        response.end("Method not allowed");
+        return;
+      }
+
+      // Internal/private Custom Endpoints must bypass Clash/system proxy. Plain
+      // HTTP Custom Endpoints are also direct because HttpsProxyAgent is not the
+      // right transport for them. Public HTTPS keeps the existing proxy behavior.
+      const direct = loopback || (trustedCustomEndpoint && (privateNetwork || target.protocol === "http:"));
+      const transport = target.protocol === "http:" ? http : https;
+      const upstreamRequest = transport.request(
+        target,
+        {
+          method,
+          headers: copyRequestHeaders(request.headers),
+          agent: direct ? undefined : agent,
+        },
+        (upstreamResponse) => {
+          response.statusCode = upstreamResponse.statusCode || 502;
+          if (upstreamResponse.statusMessage) response.statusMessage = upstreamResponse.statusMessage;
+          copyResponseHeaders(upstreamResponse, response, direct || !agent ? "direct" : "system-proxy");
+          upstreamResponse.pipe(response);
+        },
+      );
+
+      upstreamRequest.on("error", (error) => {
+        if (!response.headersSent) {
+          response.statusCode = 502;
+          response.setHeader("Content-Type", "text/plain; charset=utf-8");
+          response.setHeader("X-OpenExcel-Bridge-Route", direct || !agent ? "direct" : "system-proxy");
+        }
+        response.end(`OpenExcel local bridge failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+
+      request.pipe(upstreamRequest);
+    };
+
+    handle().catch((error) => {
       if (!response.headersSent) {
-        response.statusCode = 502;
+        response.statusCode = 500;
         response.setHeader("Content-Type", "text/plain; charset=utf-8");
       }
-      response.end(`OpenExcel local bridge failed: ${error instanceof Error ? error.message : String(error)}`);
+      response.end(`OpenExcel local bridge error: ${error instanceof Error ? error.message : String(error)}`);
     });
-
-    request.pipe(upstreamRequest);
   };
 }
 
-module.exports = { BRIDGE_PATH, createLocalCorsBridgeMiddleware };
+module.exports = {
+  BRIDGE_PATH,
+  createLocalCorsBridgeMiddleware,
+  isPrivateIpv4,
+  isPrivateIpv6,
+  isTrustedCustomEndpointRequest,
+};
