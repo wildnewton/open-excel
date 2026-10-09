@@ -101,7 +101,7 @@ function parseMacSystemProxy() {
   try {
     const output = execFileSync("/usr/sbin/scutil", ["--proxy"], { encoding: "utf8" });
     const value = (key) => {
-      const match = output.match(new RegExp(`^\\s*${key}\\s*:\s*(.+?)\\s*$`, "m"));
+      const match = output.match(new RegExp(`^\\s*${key}\\s*:\\s*(.+?)\\s*$`, "m"));
       return match?.[1]?.trim() || null;
     };
 
