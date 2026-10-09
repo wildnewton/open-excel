@@ -3,8 +3,14 @@ import {
   type AgentEvent,
   type AgentMessage,
   type ThinkingLevel as AgentThinkingLevel,
-} from "@mariozechner/pi-agent-core";
-import { type AssistantMessage, getProviders, type Model, streamSimple, type Usage } from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-agent-core";
+import {
+  type AssistantMessage,
+  getProviders,
+  type Model,
+  streamSimple,
+  type Usage,
+} from "@earendil-works/pi-ai/compat";
 import type { ReactNode } from "react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { DirtyRange } from "../../../lib/dirty-tracker";

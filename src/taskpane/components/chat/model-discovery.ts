@@ -1,4 +1,4 @@
-import { getModel, getModels, type Model } from "@mariozechner/pi-ai";
+import { getModel, getModels, type Model } from "@earendil-works/pi-ai/compat";
 import type { ByokProviderConfig, GatewayProviderConfig, ProviderConfig } from "./config";
 
 export interface DiscoveredModel {
