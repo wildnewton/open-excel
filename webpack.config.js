@@ -19,6 +19,16 @@ module.exports = async (env, options) => {
   const openExcelMode = env?.openexcelMode === "gateway" ? "gateway" : "byok";
   const config = {
     devtool: "source-map",
+    // pi-ai uses intentional variable-specifier dynamic imports to keep
+    // Node-only code (env API keys, OAuth loaders, Bedrock stream) out of
+    // browser bundles. Webpack cannot statically analyze these and emits
+    // benign "Critical dependency" warnings — silence them surgically.
+    ignoreWarnings: [
+      {
+        module: /@earendil-works[\\/]pi-ai/,
+        message: /Critical dependency: the request of a dependency is an expression/,
+      },
+    ],
     entry: {
       polyfill: ["core-js/stable", "regenerator-runtime/runtime"],
       react: ["react", "react-dom"],
