@@ -32,6 +32,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Format patched source
+        run: pnpm exec biome format --write src/taskpane/components/chat/chat-context.tsx
+
       - name: Local bridge smoke test
         run: pnpm test:bridge
 
