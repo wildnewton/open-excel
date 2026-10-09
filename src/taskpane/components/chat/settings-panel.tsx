@@ -64,6 +64,14 @@ function ThinkingSelector({ value, onChange }: { value: ThinkingLevel; onChange:
   );
 }
 
+function metadataForModel(models: DiscoveredModel[], modelId: string) {
+  const selected = models.find((item) => item.id === modelId);
+  return {
+    modelContextWindow: selected?.contextWindow,
+    modelMaxTokens: selected?.maxTokens,
+  };
+}
+
 function ByokSettingsPanel() {
   const { state, setProviderConfig, clearProviderConfig, availableProviders } = useChat();
   const [saved] = useState(loadSavedConfig);
@@ -73,7 +81,16 @@ function ByokSettingsPanel() {
   const [apiKey, setApiKey] = useState(() => savedByok?.apiKey || "");
   const [model, setModel] = useState(() => savedByok?.model || "");
   const [models, setModels] = useState<DiscoveredModel[]>(() =>
-    savedByok?.model ? [{ id: savedByok.model, name: savedByok.model }] : [],
+    savedByok?.model
+      ? [
+          {
+            id: savedByok.model,
+            name: savedByok.model,
+            contextWindow: savedByok.modelContextWindow,
+            maxTokens: savedByok.modelMaxTokens,
+          },
+        ]
+      : [],
   );
   const [showKey, setShowKey] = useState(false);
   const [useProxy, setUseProxy] = useState(() => savedByok?.useProxy !== false);
@@ -86,7 +103,6 @@ function ByokSettingsPanel() {
     () => savedByok?.responseStartTimeoutSeconds ?? DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
   );
 
-  // OAuth flow state — restored from the upstream BYOK implementation.
   const [oauthFlow, setOauthFlow] = useState<OAuthFlowState>(() => {
     if (savedByok?.authMethod === "oauth") {
       const creds = loadOAuthCredentials(savedByok.provider);
@@ -121,11 +137,9 @@ function ByokSettingsPanel() {
       apiType,
       customBaseUrl,
       responseStartTimeoutSeconds,
+      ...metadataForModel(models, model),
     };
 
-    // Built-in providers keep their existing automatic activation once
-    // authentication and a model are ready. Custom Endpoint is different:
-    // editing its fields is only a draft until the user explicitly applies it.
     if (provider === "custom") return;
 
     if (provider || apiKey || model) saveConfig(config);
@@ -134,6 +148,7 @@ function ByokSettingsPanel() {
     provider,
     apiKey,
     model,
+    models,
     useProxy,
     proxyUrl,
     thinking,
@@ -155,25 +170,26 @@ function ByokSettingsPanel() {
   };
 
   const handleProviderChange = (newProvider: string) => {
-    // Never leave the previous provider/model active while the user is
-    // configuring a different provider.
     clearProviderConfig();
     setProvider(newProvider);
+    setApiKey("");
     invalidateDiscovery();
 
     if (newProvider === "custom") {
       setAuthMethod("apikey");
-      setApiKey("");
       setOauthFlow({ step: "idle" });
       return;
     }
 
-    const keepOAuth = newProvider in OAUTH_PROVIDERS ? authMethod : "apikey";
-    setAuthMethod(keepOAuth);
+    const nextAuthMethod = newProvider in OAUTH_PROVIDERS ? authMethod : "apikey";
+    setAuthMethod(nextAuthMethod);
 
     if (!(newProvider in OAUTH_PROVIDERS)) {
       setOauthFlow({ step: "idle" });
-    } else if (keepOAuth === "oauth") {
+      return;
+    }
+
+    if (nextAuthMethod === "oauth") {
       const creds = loadOAuthCredentials(newProvider);
       if (creds) {
         setApiKey(creds.access);
@@ -181,28 +197,30 @@ function ByokSettingsPanel() {
       } else {
         setOauthFlow({ step: "idle" });
       }
+    } else {
+      setOauthFlow({ step: "idle" });
     }
   };
 
-  // Authentication behavior below mirrors the upstream BYOK OAuth flow.
   const handleAuthMethodChange = (newMethod: "apikey" | "oauth") => {
     clearProviderConfig();
     invalidateDiscovery();
+    setApiKey("");
+
     if (newMethod === "oauth") {
       const creds = loadOAuthCredentials(provider);
+      setAuthMethod("oauth");
       if (creds) {
         setOauthFlow({ step: "connected" });
-        setAuthMethod("oauth");
         setApiKey(creds.access);
       } else {
-        setAuthMethod("oauth");
         setOauthFlow({ step: "idle" });
       }
-    } else {
-      setOauthFlow({ step: "idle" });
-      setAuthMethod("apikey");
-      setApiKey("");
+      return;
     }
+
+    setOauthFlow({ step: "idle" });
+    setAuthMethod("apikey");
   };
 
   const startOAuthLogin = async () => {
@@ -242,6 +260,7 @@ function ByokSettingsPanel() {
   };
 
   const logoutOAuth = () => {
+    clearProviderConfig();
     removeOAuthCredentials(provider);
     setOauthFlow({ step: "idle" });
     setAuthMethod("apikey");
@@ -324,11 +343,25 @@ function ByokSettingsPanel() {
     activeConfig?.mode === "byok" &&
     activeConfig.provider === provider &&
     activeConfig.apiKey === apiKey &&
-    activeConfig.model === model &&
+    activeConfig.model === (isCustom ? model.trim() : model) &&
+    activeConfig.useProxy === useProxy &&
+    activeConfig.proxyUrl === proxyUrl &&
+    activeConfig.authMethod === authMethod &&
+    activeConfig.thinking === thinking &&
     activeConfig.responseStartTimeoutSeconds === responseStartTimeoutSeconds &&
-    (!isCustom || (activeConfig.apiType === apiType && activeConfig.customBaseUrl === customBaseUrl));
+    (!isCustom || (activeConfig.apiType === apiType && activeConfig.customBaseUrl === customBaseUrl.trim()));
   const canDiscover = !isCustom && provider.length > 0 && apiKey.length > 0;
   const connectLabel = models.length > 0 || discoverySource ? "Refresh Models" : "Connect";
+
+  const toggleProxy = () => {
+    if (isCustom) clearProviderConfig();
+    setUseProxy((current) => !current);
+  };
+
+  const changeProxyUrl = (value: string) => {
+    if (isCustom) clearProviderConfig();
+    setProxyUrl(value);
+  };
 
   return (
     <div className="flex-1 overflow-y-auto p-4 space-y-6" style={{ fontFamily: "var(--chat-font-mono)" }}>
@@ -414,7 +447,6 @@ function ByokSettingsPanel() {
             </>
           )}
 
-          {/* Auth method toggle — unchanged BYOK behavior for OAuth-capable providers. */}
           {hasOAuth && (
             <div>
               <span className="block text-xs text-(--chat-text-secondary) mb-1.5">Authentication</span>
@@ -447,7 +479,6 @@ function ByokSettingsPanel() {
             </div>
           )}
 
-          {/* OAuth flow — click-to-login, restored from upstream. */}
           {hasOAuth && authMethod === "oauth" && (
             <div className="space-y-2">
               {oauthFlow.step === "idle" && (
@@ -552,7 +583,6 @@ function ByokSettingsPanel() {
             </div>
           )}
 
-          {/* API Key input — hidden when using OAuth, matching upstream. */}
           {showApiKeyInput && (
             <label className="block">
               <span className="block text-xs text-(--chat-text-secondary) mb-1.5">
@@ -584,7 +614,6 @@ function ByokSettingsPanel() {
             </label>
           )}
 
-          {/* CORS Proxy — stays part of the original BYOK auth path. */}
           <div className="flex items-center justify-between">
             <div>
               <span className="text-xs text-(--chat-text-secondary)">CORS Proxy</span>
@@ -594,7 +623,7 @@ function ByokSettingsPanel() {
             </div>
             <button
               type="button"
-              onClick={() => setUseProxy(!useProxy)}
+              onClick={toggleProxy}
               className={`w-10 h-5 rounded-full transition-colors relative ${
                 useProxy ? "bg-(--chat-accent)" : "bg-(--chat-border)"
               }`}
@@ -613,7 +642,7 @@ function ByokSettingsPanel() {
               <input
                 type="text"
                 value={proxyUrl}
-                onChange={(e) => setProxyUrl(e.target.value)}
+                onChange={(e) => changeProxyUrl(e.target.value)}
                 placeholder="Optional custom CORS proxy URL"
                 className="w-full bg-(--chat-input-bg) text-(--chat-text-primary)
                            text-sm px-3 py-2 border border-(--chat-border)
@@ -658,7 +687,6 @@ function ByokSettingsPanel() {
 
           {!isCustom && (
             <>
-              {/* Model discovery is deliberately downstream of authentication. */}
               <button
                 type="button"
                 disabled={!canDiscover || isDiscovering}
@@ -794,15 +822,23 @@ function ByokSettingsPanel() {
 }
 
 function GatewaySettingsPanel() {
-  const { state, setProviderConfig } = useChat();
+  const { state, setProviderConfig, clearProviderConfig } = useChat();
   const [saved] = useState(loadSavedConfig);
   const savedGateway = saved?.mode === "gateway" ? saved : null;
   const [gatewayUrl, setGatewayUrl] = useState(() => savedGateway?.gatewayUrl || "");
   const [model, setModel] = useState(() => savedGateway?.model || "");
   const [models, setModels] = useState<DiscoveredModel[]>(() =>
-    savedGateway?.model ? [{ id: savedGateway.model, name: savedGateway.model }] : [],
+    savedGateway?.model
+      ? [
+          {
+            id: savedGateway.model,
+            name: savedGateway.model,
+            contextWindow: savedGateway.modelContextWindow,
+            maxTokens: savedGateway.modelMaxTokens,
+          },
+        ]
+      : [],
   );
-  const [thinking, setThinking] = useState<ThinkingLevel>(() => savedGateway?.thinking || "none");
   const [responseStartTimeoutSeconds, setResponseStartTimeoutSeconds] = useState(
     () => savedGateway?.responseStartTimeoutSeconds ?? DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
   );
@@ -816,15 +852,17 @@ function GatewaySettingsPanel() {
       mode: "gateway",
       gatewayUrl: gatewayUrl.trim(),
       model,
-      thinking,
+      thinking: "none",
       followMode,
       responseStartTimeoutSeconds,
+      ...metadataForModel(models, model),
     };
     if (gatewayUrl || model) saveConfig(config);
     if (gatewayUrl.trim() && model) setProviderConfig(config);
-  }, [gatewayUrl, model, thinking, followMode, responseStartTimeoutSeconds, setProviderConfig]);
+  }, [gatewayUrl, model, models, followMode, responseStartTimeoutSeconds, setProviderConfig]);
 
   const handleGatewayUrlChange = (value: string) => {
+    clearProviderConfig();
     setGatewayUrl(value);
     setModels([]);
     setModel("");
@@ -874,7 +912,8 @@ function GatewaySettingsPanel() {
               style={inputStyle}
             />
             <p className="text-[10px] text-(--chat-text-muted) mt-1">
-              OpenAI-compatible endpoint. If /v1 is omitted, OpenExcel adds it automatically.
+              OpenAI-compatible HTTPS endpoint. If /v1 is omitted, OpenExcel adds it automatically. The gateway must
+              permit CORS from the add-in origin.
             </p>
           </label>
 
@@ -937,8 +976,6 @@ function GatewaySettingsPanel() {
               timeout no longer applies.
             </p>
           </label>
-
-          <ThinkingSelector value={thinking} onChange={setThinking} />
         </div>
       </div>
 
