@@ -1,4 +1,5 @@
 import { getModel, getModels, type Model } from "@earendil-works/pi-ai/compat";
+import { buildCorsProxyUrl } from "../../../lib/cors-proxy";
 import type { ByokProviderConfig, GatewayProviderConfig, ProviderConfig } from "./config";
 
 export interface DiscoveredModel {
@@ -50,11 +51,6 @@ export function normalizeGatewayBaseUrl(value: string): string {
   const trimmed = trimTrailingSlash(value.trim());
   if (!trimmed) return "";
   return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
-}
-
-function applyCorsProxy(url: string, config: ByokProviderConfig): string {
-  if (!config.useProxy || !config.proxyUrl.trim()) return url;
-  return `${trimTrailingSlash(config.proxyUrl.trim())}/?url=${encodeURIComponent(url)}`;
 }
 
 function builtInModels(provider: string): Model<any>[] {
@@ -270,7 +266,7 @@ async function discoverChatGptCodexModels(config: ByokProviderConfig): Promise<M
   const accountId = extractChatGptAccountId(config.apiKey);
   if (accountId) headers["ChatGPT-Account-ID"] = accountId;
 
-  const payload = await fetchJson(applyCorsProxy(url, config), headers);
+  const payload = await fetchJson(buildCorsProxyUrl(url, config), headers);
   const models = parseChatGptCodexModels(payload);
   if (models.length === 0) {
     throw new Error("ChatGPT returned no selectable Codex models for this account.");
@@ -321,7 +317,7 @@ export async function discoverByokModels(config: ByokProviderConfig): Promise<Mo
     return fallbackModels(config.provider);
   }
 
-  const payload = await fetchJson(applyCorsProxy(targetUrl, config), headers);
+  const payload = await fetchJson(buildCorsProxyUrl(targetUrl, config), headers);
   const models = parser === "google" ? parseGoogleModels(payload) : parseOpenAICompatibleModels(payload);
 
   if (models.length === 0) {

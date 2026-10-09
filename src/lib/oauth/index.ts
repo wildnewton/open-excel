@@ -1,3 +1,5 @@
+import { buildCorsProxyUrl } from "../cors-proxy";
+
 export interface OAuthCredentials {
   refresh: string;
   access: string;
@@ -156,7 +158,7 @@ function parseAuthorizationInput(input: string): { code?: string; state?: string
 // --- Proxy URL helper ---
 
 function buildProxiedUrl(baseUrl: string, useProxy: boolean, proxyUrl: string): string {
-  return useProxy && proxyUrl ? `${proxyUrl}/?url=${encodeURIComponent(baseUrl)}` : baseUrl;
+  return buildCorsProxyUrl(baseUrl, { useProxy, proxyUrl });
 }
 
 // --- Token Refresh ---

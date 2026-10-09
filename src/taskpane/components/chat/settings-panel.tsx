@@ -458,7 +458,9 @@ function ByokSettingsPanel() {
           <div className="flex items-center justify-between">
             <div>
               <span className="text-xs text-(--chat-text-secondary)">CORS Proxy</span>
-              <p className="text-[10px] text-(--chat-text-muted) mt-0.5">Required for Anthropic and some providers</p>
+              <p className="text-[10px] text-(--chat-text-muted) mt-0.5">
+                Leave custom URL blank on localhost to use the built-in bridge
+              </p>
             </div>
             <button
               type="button"
@@ -482,7 +484,7 @@ function ByokSettingsPanel() {
                 type="text"
                 value={proxyUrl}
                 onChange={(e) => setProxyUrl(e.target.value)}
-                placeholder="https://your-proxy.com/proxy"
+                placeholder="Optional custom CORS proxy URL"
                 className="w-full bg-(--chat-input-bg) text-(--chat-text-primary)
                            text-sm px-3 py-2 border border-(--chat-border)
                            placeholder:text-(--chat-text-muted)
@@ -490,7 +492,7 @@ function ByokSettingsPanel() {
                 style={inputStyle}
               />
               <p className="text-[10px] text-(--chat-text-muted) mt-1">
-                Your proxy should accept ?url=encoded_url format
+                Not a system/Clash proxy. Leave blank for the local development bridge.
               </p>
             </label>
           )}

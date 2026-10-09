@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import type { ReactNode } from "react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { buildCorsProxyUrl } from "../../../lib/cors-proxy";
 import type { DirtyRange } from "../../../lib/dirty-tracker";
 import { getWorkbookMetadata, navigateTo } from "../../../lib/excel/api";
 import { loadOAuthCredentials, refreshOAuthToken, saveOAuthCredentials } from "../../../lib/oauth";
@@ -75,10 +76,10 @@ function parseDirtyRanges(result: string | undefined): DirtyRange[] | null {
 }
 
 function applyProxyToModel(model: Model<any>, config: ProviderConfig): Model<any> {
-  if (config.mode !== "byok" || !config.useProxy || !config.proxyUrl || !model.baseUrl) return model;
+  if (config.mode !== "byok" || !model.baseUrl) return model;
   return {
     ...model,
-    baseUrl: `${config.proxyUrl}/?url=${encodeURIComponent(model.baseUrl)}`,
+    baseUrl: buildCorsProxyUrl(model.baseUrl, config),
   };
 }
 

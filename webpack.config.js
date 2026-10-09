@@ -5,6 +5,7 @@ const CopyWebpackPlugin = require("copy-webpack-plugin");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 const webpack = require("webpack");
 const path = require("path");
+const { createLocalCorsBridgeMiddleware } = require("./scripts/local-cors-bridge");
 
 const urlDev = "https://localhost:3000/";
 const urlProd = "https://www.contoso.com/"; // CHANGE THIS TO YOUR PRODUCTION DEPLOYMENT LOCATION
@@ -178,6 +179,14 @@ module.exports = async (env, options) => {
     ],
     devServer: {
       hot: true,
+      host: "localhost",
+      setupMiddlewares(middlewares, devServer) {
+        middlewares.unshift({
+          name: "openexcel-local-cors-bridge",
+          middleware: createLocalCorsBridgeMiddleware(),
+        });
+        return middlewares;
+      },
       headers: {
         "Access-Control-Allow-Origin": "*",
       },
