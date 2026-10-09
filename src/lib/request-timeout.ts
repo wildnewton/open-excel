@@ -18,6 +18,7 @@ export async function fetchWithResponseStartTimeout(
   const request = new Request(input, init);
   const controller = new AbortController();
   let timedOut = false;
+  let responseStarted = false;
 
   const abortFromCaller = () => controller.abort();
   if (request.signal.aborted) {
@@ -34,7 +35,9 @@ export async function fetchWithResponseStartTimeout(
   try {
     // fetch() resolves when response headers are available. Clearing the timer
     // immediately after this await means long-running SSE streams are not capped.
-    return await fetchImpl(request, { signal: controller.signal });
+    const response = await fetchImpl(request, { signal: controller.signal });
+    responseStarted = true;
+    return response;
   } catch (error) {
     if (timedOut) {
       throw new Error(`Timed out waiting for response to start after ${seconds} seconds`);
@@ -42,7 +45,12 @@ export async function fetchWithResponseStartTimeout(
     throw error;
   } finally {
     globalThis.clearTimeout(timer);
-    request.signal.removeEventListener("abort", abortFromCaller);
+    // If fetch failed before headers, nothing remains to abort and the listener can
+    // be removed. Once streaming has started, keep caller -> controller propagation
+    // alive so the Agent's Stop/Abort action can still terminate the response body.
+    if (!responseStarted) {
+      request.signal.removeEventListener("abort", abortFromCaller);
+    }
   }
 }
 
