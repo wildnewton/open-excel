@@ -40,6 +40,9 @@ module.exports = async (env, options) => {
       commands: "./src/commands/commands.ts",
     },
     output: {
+      // Keep each build mode in its own directory so building one mode
+      // never wipes the other (e.g. build:gateway must not clobber build:byok).
+      path: path.resolve(__dirname, `dist-${openExcelMode}`),
       clean: true,
     },
     resolve: {
