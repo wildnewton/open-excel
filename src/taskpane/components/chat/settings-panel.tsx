@@ -64,7 +64,7 @@ function ThinkingSelector({ value, onChange }: { value: ThinkingLevel; onChange:
 }
 
 function ByokSettingsPanel() {
-  const { state, setProviderConfig, availableProviders } = useChat();
+  const { state, setProviderConfig, clearProviderConfig, availableProviders } = useChat();
   const [saved] = useState(loadSavedConfig);
   const savedByok = saved?.mode === "byok" ? saved : null;
 
@@ -118,13 +118,13 @@ function ByokSettingsPanel() {
       customBaseUrl,
     };
 
-    // Persist settings even before the configuration is complete.
-    if (provider || apiKey || model || customBaseUrl) saveConfig(config);
-    const ready =
-      provider === "custom"
-        ? Boolean(apiKey && model && apiType && customBaseUrl.trim())
-        : Boolean(provider && apiKey && model);
-    if (ready) setProviderConfig(config);
+    // Built-in providers keep their existing automatic activation once
+    // authentication and a model are ready. Custom Endpoint is different:
+    // editing its fields is only a draft until the user explicitly applies it.
+    if (provider === "custom") return;
+
+    if (provider || apiKey || model) saveConfig(config);
+    if (provider && apiKey && model) setProviderConfig(config);
   }, [
     provider,
     apiKey,
@@ -149,6 +149,9 @@ function ByokSettingsPanel() {
   };
 
   const handleProviderChange = (newProvider: string) => {
+    // Never leave the previous provider/model active while the user is
+    // configuring a different provider.
+    clearProviderConfig();
     setProvider(newProvider);
     invalidateDiscovery();
 
@@ -177,6 +180,7 @@ function ByokSettingsPanel() {
 
   // Authentication behavior below mirrors the upstream BYOK OAuth flow.
   const handleAuthMethodChange = (newMethod: "apikey" | "oauth") => {
+    clearProviderConfig();
     invalidateDiscovery();
     if (newMethod === "oauth") {
       const creds = loadOAuthCredentials(provider);
@@ -240,6 +244,7 @@ function ByokSettingsPanel() {
   };
 
   const handleApiKeyChange = (newApiKey: string) => {
+    clearProviderConfig();
     setApiKey(newApiKey);
     if (!isCustom) invalidateDiscovery();
   };
@@ -285,6 +290,27 @@ function ByokSettingsPanel() {
     setModel(id);
   };
 
+  const customReady = Boolean(apiKey.trim() && model.trim() && apiType.trim() && customBaseUrl.trim());
+
+  const applyCustomEndpoint = () => {
+    if (!customReady) return;
+    const config: ByokProviderConfig = {
+      mode: "byok",
+      provider: "custom",
+      apiKey,
+      model: model.trim(),
+      useProxy,
+      proxyUrl,
+      thinking,
+      followMode,
+      authMethod: "apikey",
+      apiType,
+      customBaseUrl: customBaseUrl.trim(),
+    };
+    saveConfig(config);
+    setProviderConfig(config);
+  };
+
   const activeConfig = state.providerConfig;
   const isConfigured =
     activeConfig?.mode === "byok" &&
@@ -328,7 +354,10 @@ function ByokSettingsPanel() {
                 <span className="block text-xs text-(--chat-text-secondary) mb-1.5">API Type</span>
                 <select
                   value={apiType}
-                  onChange={(e) => setApiType(e.target.value)}
+                  onChange={(e) => {
+                    clearProviderConfig();
+                    setApiType(e.target.value);
+                  }}
                   className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) focus:outline-none focus:border-(--chat-border-active)"
                   style={inputStyle}
                 >
@@ -348,7 +377,10 @@ function ByokSettingsPanel() {
                 <input
                   type="text"
                   value={customBaseUrl}
-                  onChange={(e) => setCustomBaseUrl(e.target.value)}
+                  onChange={(e) => {
+                    clearProviderConfig();
+                    setCustomBaseUrl(e.target.value);
+                  }}
                   placeholder="https://api.openai.com/v1"
                   className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) placeholder:text-(--chat-text-muted) focus:outline-none focus:border-(--chat-border-active)"
                   style={inputStyle}
@@ -361,7 +393,10 @@ function ByokSettingsPanel() {
                 <input
                   type="text"
                   value={model}
-                  onChange={(e) => setModel(e.target.value)}
+                  onChange={(e) => {
+                    clearProviderConfig();
+                    setModel(e.target.value);
+                  }}
                   placeholder="gpt-4o"
                   className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) placeholder:text-(--chat-text-muted) focus:outline-none focus:border-(--chat-border-active)"
                   style={inputStyle}
@@ -654,7 +689,26 @@ function ByokSettingsPanel() {
             </>
           )}
 
-          <ThinkingSelector value={thinking} onChange={setThinking} />
+          <ThinkingSelector
+            value={thinking}
+            onChange={(value) => {
+              if (isCustom) clearProviderConfig();
+              setThinking(value);
+            }}
+          />
+
+          {isCustom && (
+            <button
+              type="button"
+              onClick={applyCustomEndpoint}
+              disabled={!customReady || isConfigured}
+              className="w-full flex items-center justify-center gap-2 bg-(--chat-accent) text-white text-xs px-3 py-2
+                         disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90 transition-opacity"
+              style={inputStyle}
+            >
+              {isConfigured ? "Custom Endpoint Active" : "Apply Custom Endpoint"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -669,7 +723,11 @@ function ByokSettingsPanel() {
             </>
           ) : (
             <span className="text-(--chat-text-muted)">
-              {isCustom ? "Enter endpoint, model, and API key" : "Authenticate, connect, and select a model"}
+              {isCustom
+                ? customReady
+                  ? "Custom Endpoint is not active yet — click Apply Custom Endpoint"
+                  : "Enter endpoint, model, and API key"
+                : "Authenticate, connect, and select a model"}
             </span>
           )}
         </div>

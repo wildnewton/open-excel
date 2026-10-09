@@ -108,6 +108,7 @@ interface ChatContextValue {
   state: ChatState;
   sendMessage: (content: string) => Promise<void>;
   setProviderConfig: (config: ProviderConfig) => void;
+  clearProviderConfig: () => void;
   clearMessages: () => void;
   abort: () => void;
   availableProviders: string[];
@@ -490,6 +491,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [applyConfig],
   );
 
+  const clearProviderConfig = useCallback(() => {
+    agentRef.current?.abort();
+    agentRef.current = null;
+    configRef.current = null;
+    pendingConfigRef.current = null;
+    isStreamingRef.current = false;
+    setState((prev) => ({
+      ...prev,
+      providerConfig: null,
+      isStreaming: false,
+      error: null,
+      sessionStats: { ...prev.sessionStats, contextWindow: 0 },
+    }));
+  }, []);
+
   const abort = useCallback(() => {
     agentRef.current?.abort();
     isStreamingRef.current = false;
@@ -726,6 +742,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         state,
         sendMessage,
         setProviderConfig,
+        clearProviderConfig,
         clearMessages,
         abort,
         availableProviders,
