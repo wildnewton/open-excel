@@ -33,6 +33,9 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Validate Office manifest
+        run: pnpm validate
+
       - name: Build BYOK mode
         run: pnpm build:byok
 
