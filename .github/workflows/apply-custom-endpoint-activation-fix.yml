@@ -1,0 +1,47 @@
+name: Apply custom endpoint activation fix
+
+on:
+  push:
+    branches:
+      - feature/live-models-gateway-mode
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Apply fix
+        run: python .github/apply-custom-endpoint-activation-fix.py
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate
+        run: |
+          pnpm lint:fix
+          pnpm typecheck
+          pnpm lint
+          pnpm build:byok
+          pnpm build:gateway
+
+      - name: Commit fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/taskpane/components/chat/chat-context.tsx src/taskpane/components/chat/settings-panel.tsx
+          git commit -m 'Fix custom endpoint activation state'
+          git push
