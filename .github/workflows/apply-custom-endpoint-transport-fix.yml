@@ -1,0 +1,88 @@
+name: Apply custom endpoint transport fix
+
+on:
+  push:
+    branches:
+      - feature/live-models-gateway-mode
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Apply fix
+        run: python .github/apply-custom-endpoint-transport-fix.py
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Bridge policy smoke test
+        run: |
+          node <<'NODE'
+          const assert = require('assert');
+          const {
+            isPrivateIpv4,
+            isPrivateIpv6,
+            isTrustedCustomEndpointRequest,
+          } = require('./scripts/local-cors-bridge');
+
+          assert.equal(isPrivateIpv4('10.1.2.3'), true);
+          assert.equal(isPrivateIpv4('192.168.1.20'), true);
+          assert.equal(isPrivateIpv4('8.8.8.8'), false);
+          assert.equal(isPrivateIpv6('::1'), true);
+          assert.equal(isPrivateIpv6('fd00::1'), true);
+
+          const trusted = {
+            headers: {
+              host: 'localhost:3000',
+              'x-openexcel-custom-endpoint': '1',
+              'sec-fetch-site': 'same-origin',
+            },
+          };
+          const untrusted = {
+            headers: {
+              host: 'localhost:3000',
+              'x-openexcel-custom-endpoint': '1',
+              'sec-fetch-site': 'cross-site',
+              origin: 'https://example.com',
+            },
+          };
+          assert.equal(isTrustedCustomEndpointRequest(trusted), true);
+          assert.equal(isTrustedCustomEndpointRequest(untrusted), false);
+          console.log('Bridge policy smoke test passed');
+          NODE
+
+      - name: Validate
+        run: |
+          pnpm lint:fix
+          pnpm typecheck
+          pnpm lint
+          pnpm build:byok
+          pnpm build:gateway
+
+      - name: Commit fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            src/taskpane/components/chat/config.ts \
+            src/taskpane/components/chat/settings-panel.tsx \
+            src/taskpane/components/chat/chat-context.tsx \
+            src/lib/cors-proxy.ts \
+            scripts/local-cors-bridge.js
+          git commit -m 'Fix custom endpoint auth and intranet transport'
+          git push
