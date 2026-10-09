@@ -201,6 +201,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const currentSessionIdRef = useRef<string | null>(null);
   const followModeRef = useRef(state.providerConfig?.followMode ?? true);
   const restoredAgentMessagesRef = useRef<AgentMessage[]>([]);
+  const suppressNextSessionSaveRef = useRef(false);
 
   const availableProviders = getProviders();
 
@@ -585,6 +586,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     const clear = async () => {
       const agent = agentRef.current;
       if (agent && isStreamingRef.current) {
+        // agent_end normally triggers the session autosave effect. Clear performs
+        // its own authoritative empty-session save below, so suppress that one
+        // transition to prevent a stale pre-clear save from racing with it.
+        suppressNextSessionSaveRef.current = true;
         agent.abort();
         await agent.waitForIdle();
       }
@@ -701,18 +706,24 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const prevStreamingRef = useRef(false);
   useEffect(() => {
     if (prevStreamingRef.current && !state.isStreaming && currentSessionIdRef.current) {
-      const sessionId = currentSessionIdRef.current;
-      const agentMessages = agentRef.current ? [...agentRef.current.state.messages] : restoredAgentMessagesRef.current;
-      restoredAgentMessagesRef.current = agentMessages;
-      saveSession(sessionId, state.messages, agentMessages)
-        .then(async () => {
-          await refreshSessions();
-          const updated = await getSession(sessionId);
-          if (updated) {
-            setState((prev) => ({ ...prev, currentSession: updated }));
-          }
-        })
-        .catch(console.error);
+      if (suppressNextSessionSaveRef.current) {
+        suppressNextSessionSaveRef.current = false;
+      } else {
+        const sessionId = currentSessionIdRef.current;
+        const agentMessages = agentRef.current
+          ? [...agentRef.current.state.messages]
+          : restoredAgentMessagesRef.current;
+        restoredAgentMessagesRef.current = agentMessages;
+        saveSession(sessionId, state.messages, agentMessages)
+          .then(async () => {
+            await refreshSessions();
+            const updated = await getSession(sessionId);
+            if (updated) {
+              setState((prev) => ({ ...prev, currentSession: updated }));
+            }
+          })
+          .catch(console.error);
+      }
     }
     prevStreamingRef.current = state.isStreaming;
   }, [state.isStreaming, state.messages, refreshSessions]);

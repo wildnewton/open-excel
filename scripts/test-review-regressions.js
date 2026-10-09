@@ -31,6 +31,7 @@ assert.equal(clearProvider.includes("isStreamingRef.current = false"), false, "I
 const abortSection = section(chat, "const abort", "const sendMessage");
 assert.equal(abortSection.includes("isStreamingRef.current = false"), false, "Abort must wait for agent_end");
 assert.match(chat, /waitForIdle\(\)/, "Reset after abort must wait for the Agent to become idle");
+assert.match(chat, /suppressNextSessionSaveRef/, "Clear must suppress the stale post-abort autosave race");
 
 assert.match(storage, /agentMessages: AgentMessage\[\]/, "Sessions must persist provider-native agent messages");
 assert.match(discovery, /reasoning: true,[\s\S]*input: \["text", "image"\]/, "Custom Endpoint capabilities regressed");
