@@ -44,14 +44,44 @@ const PROVIDER_API_PREFERENCE: Record<string, string[]> = {
   mistral: ["mistral-conversations", "openai-completions"],
 };
 
+class ModelDiscoveryHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ModelDiscoveryHttpError";
+  }
+}
+
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
 export function normalizeGatewayBaseUrl(value: string): string {
-  const trimmed = trimTrailingSlash(value.trim());
+  const trimmed = value.trim();
   if (!trimmed) return "";
-  return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("Gateway URL must be a valid absolute HTTPS URL.");
+  }
+
+  if (parsed.protocol !== "https:") {
+    throw new Error("Gateway URL must use HTTPS.");
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("Gateway URL must not contain embedded credentials.");
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error("Gateway URL must not contain a query string or fragment.");
+  }
+
+  const pathname = trimTrailingSlash(parsed.pathname);
+  parsed.pathname = /\/v1$/i.test(pathname) ? pathname : `${pathname}/v1`;
+  return parsed.toString();
 }
 
 function builtInModels(provider: string): Model<any>[] {
@@ -185,9 +215,10 @@ function parseChatGptCodexModels(payload: unknown): DiscoveredModel[] {
       const id = stringValue(record.slug) ?? stringValue(record.id);
       if (!id) return null;
 
+      // In ChatGPT/Codex mode, picker visibility is authoritative. A model can be
+      // available to a ChatGPT subscription even when supported_in_api is false.
       const visibility = stringValue(record.visibility);
       if (visibility && visibility !== "list") return null;
-      if (record.supported_in_api === false) return null;
 
       const name = stringValue(record.display_name) ?? stringValue(record.name) ?? id;
       return {
@@ -241,9 +272,16 @@ async function fetchJson(
       const body = await response.text();
       detail = body ? `: ${body.slice(0, 300)}` : "";
     } catch {}
-    throw new Error(`Model discovery failed (${response.status} ${response.statusText})${detail}`);
+    throw new ModelDiscoveryHttpError(
+      response.status,
+      `Model discovery failed (${response.status} ${response.statusText})${detail}`,
+    );
   }
   return response.json();
+}
+
+function isUnsupportedModelListError(error: unknown): boolean {
+  return error instanceof ModelDiscoveryHttpError && [404, 405, 501].includes(error.status);
 }
 
 async function configWithFreshOAuthToken(config: ByokProviderConfig): Promise<ByokProviderConfig> {
@@ -291,7 +329,12 @@ export async function discoverByokModels(config: ByokProviderConfig): Promise<Mo
   const activeConfig = await configWithFreshOAuthToken(config);
 
   if (activeConfig.provider === "openai-codex") {
-    return discoverChatGptCodexModels(activeConfig);
+    if (activeConfig.authMethod === "oauth") {
+      return discoverChatGptCodexModels(activeConfig);
+    }
+    // The account-scoped ChatGPT catalog is OAuth-only. Preserve the existing
+    // API-key/manual path rather than forcing API-key users through OAuth.
+    return fallbackModels(activeConfig.provider);
   }
 
   const template = providerTemplate(activeConfig.provider);
@@ -325,13 +368,21 @@ export async function discoverByokModels(config: ByokProviderConfig): Promise<Mo
     return fallbackModels(activeConfig.provider);
   }
 
-  const payload = await fetchJson(
-    buildCorsProxyUrl(targetUrl, activeConfig),
-    headers,
-    activeConfig.responseStartTimeoutSeconds,
-  );
-  const models = parser === "google" ? parseGoogleModels(payload) : parseOpenAICompatibleModels(payload);
+  let payload: unknown;
+  try {
+    payload = await fetchJson(
+      buildCorsProxyUrl(targetUrl, activeConfig),
+      headers,
+      activeConfig.responseStartTimeoutSeconds,
+    );
+  } catch (error) {
+    if (isUnsupportedModelListError(error)) {
+      return fallbackModels(activeConfig.provider);
+    }
+    throw error;
+  }
 
+  const models = parser === "google" ? parseGoogleModels(payload) : parseOpenAICompatibleModels(payload);
   if (models.length === 0) {
     throw new Error("The provider returned no compatible chat models.");
   }
@@ -363,8 +414,8 @@ function createCustomByokModel(config: ByokProviderConfig): Model<any> {
     api: config.apiType as any,
     provider: "custom",
     baseUrl: trimTrailingSlash(config.customBaseUrl.trim()),
-    reasoning: false,
-    input: ["text"],
+    reasoning: true,
+    input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: config.modelContextWindow ?? 128000,
     maxTokens: config.modelMaxTokens ?? 32000,
