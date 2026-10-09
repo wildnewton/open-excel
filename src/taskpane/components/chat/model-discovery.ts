@@ -22,12 +22,11 @@ const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const GATEWAY_COMPAT_API_KEY = "openexcel-gateway-no-auth";
 const CHATGPT_CODEX_MODELS_URL = "https://chatgpt.com/backend-api/codex/models";
 
-// The Codex backend requires a client_version query parameter and uses it as a
-// minimum-client compatibility gate. OpenExcel is not the Codex CLI, so use a
-// compatibility ceiling rather than tying discovery to this add-in's unrelated
-// package version. The returned catalog is still account-scoped and filtered by
-// the backend; this value is not a model allowlist.
-const CHATGPT_CODEX_DISCOVERY_CLIENT_VERSION = "1.0.0";
+// ChatGPT's Codex model catalog requires the Codex client_version query parameter.
+// Keep this isolated so it can be updated when the upstream contract changes; it
+// is not a model allowlist and the returned account-scoped catalog remains the
+// source of truth. This matches the current stable Codex release line.
+const CHATGPT_CODEX_DISCOVERY_CLIENT_VERSION = "0.162.0";
 
 const DEFAULT_API_PREFERENCE = [
   "openai-responses",
@@ -144,16 +143,7 @@ function extractChatGptAccountId(accessToken: string): string | undefined {
   if (direct) return direct;
 
   const authClaims = asRecord(claims["https://api.openai.com/auth"]);
-  const nested = stringValue(authClaims?.chatgpt_account_id);
-  if (nested) return nested;
-
-  const organizations = Array.isArray(claims.organizations) ? claims.organizations : [];
-  for (const organization of organizations) {
-    const id = stringValue(asRecord(organization)?.id);
-    if (id) return id;
-  }
-
-  return undefined;
+  return stringValue(authClaims?.chatgpt_account_id);
 }
 
 function parseOpenAICompatibleModels(payload: unknown, filterUnsupported = true): DiscoveredModel[] {
@@ -285,8 +275,6 @@ async function discoverChatGptCodexModels(config: ByokProviderConfig): Promise<M
 }
 
 export async function discoverByokModels(config: ByokProviderConfig): Promise<ModelDiscoveryResult> {
-  // ChatGPT subscription OAuth uses the Codex account catalog, not OpenAI's
-  // public /v1/models endpoint and not pi-ai's bundled static catalog.
   if (config.provider === "openai-codex") {
     return discoverChatGptCodexModels(config);
   }
@@ -305,7 +293,7 @@ export async function discoverByokModels(config: ByokProviderConfig): Promise<Mo
   } else if (config.provider === "anthropic" && template.api === "anthropic-messages") {
     targetUrl = `${baseUrl}/models`;
     headers["anthropic-version"] = "2023-06-01";
-    if (config.apiKey.startsWith("sk-ant-oat")) {
+    if (config.authMethod === "oauth") {
       headers.Authorization = `Bearer ${config.apiKey}`;
       headers["anthropic-beta"] = "oauth-2025-04-20";
     } else {
@@ -356,11 +344,11 @@ function createCustomByokModel(config: ByokProviderConfig): Model<any> {
     api: config.apiType as any,
     provider: "custom",
     baseUrl: trimTrailingSlash(config.customBaseUrl.trim()),
-    reasoning: true,
-    input: ["text", "image"],
+    reasoning: false,
+    input: ["text"],
     cost: ZERO_COST,
-    contextWindow: 128000,
-    maxTokens: 32000,
+    contextWindow: config.modelContextWindow ?? 128000,
+    maxTokens: config.modelMaxTokens ?? 32000,
   } as Model<any>;
 }
 
@@ -375,6 +363,8 @@ function createUnknownByokModel(config: ByokProviderConfig): Model<any> {
     reasoning: template.reasoning,
     input: template.input,
     cost: ZERO_COST,
+    contextWindow: config.modelContextWindow ?? template.contextWindow,
+    maxTokens: config.modelMaxTokens ?? template.maxTokens,
   } as Model<any>;
 }
 
@@ -391,8 +381,8 @@ function createGatewayModel(config: GatewayProviderConfig): Model<any> {
     reasoning: false,
     input: ["text"],
     cost: ZERO_COST,
-    contextWindow: 128000,
-    maxTokens: 16384,
+    contextWindow: config.modelContextWindow ?? 128000,
+    maxTokens: config.modelMaxTokens ?? 16384,
     compat: {
       supportsStore: false,
       supportsDeveloperRole: false,
