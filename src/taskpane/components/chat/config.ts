@@ -6,7 +6,12 @@ import {
 
 export type ThinkingLevel = "none" | "low" | "medium" | "high";
 
-export interface ByokProviderConfig {
+interface DiscoveredModelMetadata {
+  modelContextWindow?: number;
+  modelMaxTokens?: number;
+}
+
+export interface ByokProviderConfig extends DiscoveredModelMetadata {
   mode: "byok";
   provider: string;
   apiKey: string;
@@ -21,7 +26,7 @@ export interface ByokProviderConfig {
   responseStartTimeoutSeconds: number;
 }
 
-export interface GatewayProviderConfig {
+export interface GatewayProviderConfig extends DiscoveredModelMetadata {
   mode: "gateway";
   gatewayUrl: string;
   model: string;
@@ -76,6 +81,10 @@ function parseThinkingLevel(value: unknown): ThinkingLevel {
   return value === "low" || value === "medium" || value === "high" ? value : "none";
 }
 
+function parsePositiveNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
 export function loadSavedConfig(): ProviderConfig | null {
   try {
     const storageKey = APP_MODE === "gateway" ? GATEWAY_STORAGE_KEY : BYOK_STORAGE_KEY;
@@ -94,15 +103,16 @@ export function loadSavedConfig(): ProviderConfig | null {
         responseStartTimeoutSeconds: normalizeResponseStartTimeoutSeconds(
           parsed.responseStartTimeoutSeconds ?? DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
         ),
+        modelContextWindow: parsePositiveNumber(parsed.modelContextWindow),
+        modelMaxTokens: parsePositiveNumber(parsed.modelMaxTokens),
       };
     }
 
     const provider = typeof parsed.provider === "string" ? parsed.provider : "";
     const authMethod = parsed.authMethod === "oauth" ? "oauth" : "apikey";
-    let apiKey = typeof parsed.apiKey === "string" ? parsed.apiKey : "";
+    let apiKey = authMethod === "apikey" && typeof parsed.apiKey === "string" ? parsed.apiKey : "";
     if (authMethod === "oauth" && provider) {
-      const creds = loadOAuthCredentials(provider);
-      if (creds) apiKey = creds.access;
+      apiKey = loadOAuthCredentials(provider)?.access ?? "";
     }
 
     return {
@@ -120,6 +130,8 @@ export function loadSavedConfig(): ProviderConfig | null {
       responseStartTimeoutSeconds: normalizeResponseStartTimeoutSeconds(
         parsed.responseStartTimeoutSeconds ?? DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
       ),
+      modelContextWindow: parsePositiveNumber(parsed.modelContextWindow),
+      modelMaxTokens: parsePositiveNumber(parsed.modelMaxTokens),
     };
   } catch {
     return null;
@@ -128,7 +140,8 @@ export function loadSavedConfig(): ProviderConfig | null {
 
 export function saveConfig(config: ProviderConfig): void {
   const storageKey = config.mode === "gateway" ? GATEWAY_STORAGE_KEY : BYOK_STORAGE_KEY;
-  localStorage.setItem(storageKey, JSON.stringify(config));
+  const persisted = config.mode === "byok" && config.authMethod === "oauth" ? { ...config, apiKey: "" } : config;
+  localStorage.setItem(storageKey, JSON.stringify(persisted));
 }
 
 export function isConfigReady(config: ProviderConfig | null): config is ProviderConfig {
