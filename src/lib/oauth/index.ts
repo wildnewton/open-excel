@@ -114,6 +114,7 @@ export function buildAuthorizationUrl(
     });
     return { url: `${OPENAI_CODEX_AUTHORIZE_URL}?${params}`, oauthState };
   }
+
   const params = new URLSearchParams({
     code: "true",
     client_id: ANTHROPIC_CLIENT_ID,
@@ -124,7 +125,7 @@ export function buildAuthorizationUrl(
     code_challenge_method: "S256",
     state: verifier,
   });
-  return { url: `${ANTHROPIC_AUTHORIZE_URL}?${params}` };
+  return { url: `${ANTHROPIC_AUTHORIZE_URL}?${params}`, oauthState: verifier };
 }
 
 // --- Input Parsing ---
@@ -239,7 +240,7 @@ export async function exchangeOAuthCode(params: {
   const { provider, rawInput, verifier, expectedState, useProxy, proxyUrl } = params;
   const parsed = parseAuthorizationInput(rawInput);
   if (!parsed.code) throw new Error("Could not extract authorization code from input");
-  if (expectedState && parsed.state && parsed.state !== expectedState) {
+  if (expectedState && parsed.state !== expectedState) {
     throw new Error("State mismatch — possible CSRF. Please try again.");
   }
 
@@ -271,7 +272,6 @@ export async function exchangeOAuthCode(params: {
     };
   }
 
-  // Anthropic
   const url = buildProxiedUrl(ANTHROPIC_TOKEN_URL, useProxy, proxyUrl);
   const response = await fetch(url, {
     method: "POST",
