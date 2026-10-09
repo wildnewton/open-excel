@@ -24,6 +24,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Local bridge smoke test
+        run: pnpm test:bridge
+
       - name: Type check
         run: pnpm typecheck
 
