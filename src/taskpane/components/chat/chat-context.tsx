@@ -235,10 +235,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         break;
       }
       case "message_update": {
-        if (event.message.role === "assistant" && streamingMessageIdRef.current) {
+        const messageId = streamingMessageIdRef.current;
+        if (event.message.role === "assistant" && messageId) {
+          // Capture the id before scheduling the React state update. Fast streams can
+          // batch multiple updates with message_end, which clears the mutable ref.
           setState((prev) => {
             const messages = [...prev.messages];
-            const idx = messages.findIndex((m) => m.id === streamingMessageIdRef.current);
+            const idx = messages.findIndex((m) => m.id === messageId);
             if (idx !== -1) {
               const parts = extractPartsFromAssistantMessage(event.message, messages[idx].parts);
               messages[idx] = { ...messages[idx], parts };
@@ -250,6 +253,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       case "message_end": {
         if (event.message.role === "assistant") {
+          const messageId = streamingMessageIdRef.current;
           const assistantMsg = event.message as AssistantMessage;
           const isError = assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted";
           console.log("[Chat] Assistant message result:", event.message);
@@ -258,7 +262,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
           setState((prev) => {
             const messages = [...prev.messages];
-            const idx = messages.findIndex((m) => m.id === streamingMessageIdRef.current);
+            // Use the id captured before the ref is cleared below. This also makes
+            // the final complete message a reliable fallback if intermediate updates
+            // were React-batched.
+            const idx = messageId ? messages.findIndex((m) => m.id === messageId) : -1;
 
             if (isError) {
               if (idx !== -1) {
