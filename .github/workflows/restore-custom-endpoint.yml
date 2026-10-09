@@ -32,6 +32,7 @@ jobs:
 
       - name: Validate
         run: |
+          pnpm lint:fix
           pnpm typecheck
           pnpm lint
           rm -rf dist-byok dist-gateway
