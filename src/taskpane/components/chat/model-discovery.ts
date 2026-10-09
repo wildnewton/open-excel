@@ -1,5 +1,6 @@
 import { getModel, getModels, type Model } from "@earendil-works/pi-ai/compat";
 import { buildCorsProxyUrl } from "../../../lib/cors-proxy";
+import { loadOAuthCredentials, refreshOAuthToken, saveOAuthCredentials } from "../../../lib/oauth";
 import { DEFAULT_RESPONSE_START_TIMEOUT_SECONDS, fetchWithResponseStartTimeout } from "../../../lib/request-timeout";
 import type { ByokProviderConfig, GatewayProviderConfig, ProviderConfig } from "./config";
 
@@ -245,6 +246,18 @@ async function fetchJson(
   return response.json();
 }
 
+async function configWithFreshOAuthToken(config: ByokProviderConfig): Promise<ByokProviderConfig> {
+  if (config.authMethod !== "oauth") return config;
+
+  const stored = loadOAuthCredentials(config.provider);
+  if (!stored) throw new Error("OAuth session is no longer available. Please sign in again.");
+  if (Date.now() < stored.expires) return { ...config, apiKey: stored.access };
+
+  const refreshed = await refreshOAuthToken(config.provider, stored.refresh, config.proxyUrl, config.useProxy);
+  saveOAuthCredentials(config.provider, refreshed);
+  return { ...config, apiKey: refreshed.access };
+}
+
 async function discoverChatGptCodexModels(config: ByokProviderConfig): Promise<ModelDiscoveryResult> {
   if (config.authMethod !== "oauth") {
     throw new Error("OpenAI (ChatGPT) model discovery requires the existing OAuth sign-in flow.");
@@ -275,29 +288,31 @@ async function discoverChatGptCodexModels(config: ByokProviderConfig): Promise<M
 }
 
 export async function discoverByokModels(config: ByokProviderConfig): Promise<ModelDiscoveryResult> {
-  if (config.provider === "openai-codex") {
-    return discoverChatGptCodexModels(config);
+  const activeConfig = await configWithFreshOAuthToken(config);
+
+  if (activeConfig.provider === "openai-codex") {
+    return discoverChatGptCodexModels(activeConfig);
   }
 
-  const template = providerTemplate(config.provider);
-  if (!template?.baseUrl) return fallbackModels(config.provider);
+  const template = providerTemplate(activeConfig.provider);
+  if (!template?.baseUrl) return fallbackModels(activeConfig.provider);
 
   const baseUrl = trimTrailingSlash(template.baseUrl);
   let targetUrl = "";
   const headers: Record<string, string> = { Accept: "application/json" };
   let parser: "google" | "openai" = "openai";
 
-  if (config.provider === "google" && template.api === "google-generative-ai") {
-    targetUrl = `${baseUrl}/models?key=${encodeURIComponent(config.apiKey)}`;
+  if (activeConfig.provider === "google" && template.api === "google-generative-ai") {
+    targetUrl = `${baseUrl}/models?key=${encodeURIComponent(activeConfig.apiKey)}`;
     parser = "google";
-  } else if (config.provider === "anthropic" && template.api === "anthropic-messages") {
+  } else if (activeConfig.provider === "anthropic" && template.api === "anthropic-messages") {
     targetUrl = `${baseUrl}/models`;
     headers["anthropic-version"] = "2023-06-01";
-    if (config.authMethod === "oauth") {
-      headers.Authorization = `Bearer ${config.apiKey}`;
+    if (activeConfig.authMethod === "oauth") {
+      headers.Authorization = `Bearer ${activeConfig.apiKey}`;
       headers["anthropic-beta"] = "oauth-2025-04-20";
     } else {
-      headers["x-api-key"] = config.apiKey;
+      headers["x-api-key"] = activeConfig.apiKey;
     }
   } else if (
     template.api === "openai-completions" ||
@@ -305,12 +320,16 @@ export async function discoverByokModels(config: ByokProviderConfig): Promise<Mo
     template.api === "mistral-conversations"
   ) {
     targetUrl = `${baseUrl}/models`;
-    headers.Authorization = `Bearer ${config.apiKey}`;
+    headers.Authorization = `Bearer ${activeConfig.apiKey}`;
   } else {
-    return fallbackModels(config.provider);
+    return fallbackModels(activeConfig.provider);
   }
 
-  const payload = await fetchJson(buildCorsProxyUrl(targetUrl, config), headers, config.responseStartTimeoutSeconds);
+  const payload = await fetchJson(
+    buildCorsProxyUrl(targetUrl, activeConfig),
+    headers,
+    activeConfig.responseStartTimeoutSeconds,
+  );
   const models = parser === "google" ? parseGoogleModels(payload) : parseOpenAICompatibleModels(payload);
 
   if (models.length === 0) {
@@ -387,8 +406,8 @@ function createGatewayModel(config: GatewayProviderConfig): Model<any> {
       supportsStore: false,
       supportsDeveloperRole: false,
       supportsReasoningEffort: false,
-      supportsUsageInStreaming: true,
-      supportsStrictMode: true,
+      supportsUsageInStreaming: false,
+      supportsStrictMode: false,
     },
   } as Model<any>;
 }
@@ -396,7 +415,16 @@ function createGatewayModel(config: GatewayProviderConfig): Model<any> {
 export function resolveConfiguredModel(config: ProviderConfig): Model<any> {
   if (config.mode === "gateway") return createGatewayModel(config);
   if (config.provider === "custom") return createCustomByokModel(config);
-  return builtInModel(config.provider, config.model) ?? createUnknownByokModel(config);
+
+  const known = builtInModel(config.provider, config.model);
+  if (known) {
+    return {
+      ...known,
+      contextWindow: config.modelContextWindow ?? known.contextWindow,
+      maxTokens: config.modelMaxTokens ?? known.maxTokens,
+    } as Model<any>;
+  }
+  return createUnknownByokModel(config);
 }
 
 export function apiKeyForConfig(config: ProviderConfig): string {
