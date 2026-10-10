@@ -7,6 +7,7 @@ const { HttpsProxyAgent } = require("https-proxy-agent");
 
 const BRIDGE_PATH = "/__openexcel_bridge";
 const CUSTOM_ENDPOINT_HEADER = "x-openexcel-custom-endpoint";
+const TRACE_HEADER = "x-openexcel-trace-id";
 const DNS_CLASSIFICATION_TIMEOUT_MS = 2000;
 const DEFAULT_UPSTREAM_HEADER_TIMEOUT_MS = 180000;
 const MIN_UPSTREAM_HEADER_TIMEOUT_MS = 1000;
@@ -28,6 +29,7 @@ const REQUEST_HEADERS_TO_DROP = new Set([
   "referer",
   "cookie",
   CUSTOM_ENDPOINT_HEADER,
+  TRACE_HEADER,
   "sec-fetch-dest",
   "sec-fetch-mode",
   "sec-fetch-site",
@@ -164,6 +166,17 @@ function createRequestId() {
   return Math.random().toString(36).slice(2, 8);
 }
 
+function getTraceId(request) {
+  const raw = String(request.headers[TRACE_HEADER] || "").trim();
+  return /^[a-z0-9-]{1,80}$/i.test(raw) ? raw : null;
+}
+
+function traceLog(traceId, startedAt, stage, details = "") {
+  if (!traceId) return;
+  const suffix = details ? ` ${details}` : "";
+  console.log(`[OpenExcel trace:${traceId}] ${stage} +${Date.now() - startedAt}ms${suffix}`);
+}
+
 function parseUpstreamHeaderTimeoutMs(requestUrl) {
   const raw = Number.parseInt(requestUrl.searchParams.get("timeout_ms") || "", 10);
   if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_UPSTREAM_HEADER_TIMEOUT_MS;
@@ -194,6 +207,10 @@ function createLocalCorsBridgeMiddleware() {
       }
 
       if (requestUrl.pathname !== BRIDGE_PATH) return next();
+
+      const startedAt = Date.now();
+      const traceId = getTraceId(request);
+      traceLog(traceId, startedAt, "bridge.received");
 
       const upstreamHeaderTimeoutMs = parseUpstreamHeaderTimeoutMs(requestUrl);
       const rawTarget = requestUrl.searchParams.get("url");
@@ -227,7 +244,11 @@ function createLocalCorsBridgeMiddleware() {
       // for routing and can leave the browser request pending when local DNS is slow.
       let privateNetwork = loopback;
       if (!(trustedCustomEndpoint && target.protocol === "http:") && !loopback) {
+        traceLog(traceId, startedAt, "bridge.route-dns-start");
         privateNetwork = await resolvesToPrivateNetwork(target.hostname);
+        traceLog(traceId, startedAt, "bridge.route-dns-end", `private=${privateNetwork ? "yes" : "no"}`);
+      } else {
+        traceLog(traceId, startedAt, "bridge.route-dns-skipped");
       }
 
       // Generic provider proxying stays locked to public HTTPS (plus historical
@@ -261,11 +282,11 @@ function createLocalCorsBridgeMiddleware() {
       const route = direct || !agent ? "direct" : "system-proxy";
       const transport = target.protocol === "http:" ? http : https;
       const requestId = createRequestId();
-      const startedAt = Date.now();
 
       console.log(
         `[OpenExcel bridge:${requestId}] start method=${method} protocol=${target.protocol.slice(0, -1)} custom=${trustedCustomEndpoint ? "yes" : "no"} route=${route} responseStartTimeout=${upstreamHeaderTimeoutMs}ms`,
       );
+      traceLog(traceId, startedAt, "bridge.upstream-request-start", `route=${route}`);
 
       let headerTimer;
       const upstreamRequest = transport.request(
@@ -280,17 +301,31 @@ function createLocalCorsBridgeMiddleware() {
           console.log(
             `[OpenExcel bridge:${requestId}] headers status=${upstreamResponse.statusCode || 502} after=${Date.now() - startedAt}ms`,
           );
+          traceLog(traceId, startedAt, "bridge.upstream-headers", `status=${upstreamResponse.statusCode || 502}`);
           response.statusCode = upstreamResponse.statusCode || 502;
           if (upstreamResponse.statusMessage) response.statusMessage = upstreamResponse.statusMessage;
           copyResponseHeaders(upstreamResponse, response, route);
 
+          upstreamResponse.once("data", (chunk) => {
+            traceLog(traceId, startedAt, "bridge.upstream-first-byte", `bytes=${chunk.length}`);
+          });
+          upstreamResponse.on("end", () => {
+            traceLog(traceId, startedAt, "bridge.upstream-end");
+          });
           upstreamResponse.on("error", (error) => {
+            traceLog(
+              traceId,
+              startedAt,
+              "bridge.upstream-response-error",
+              `error=${error instanceof Error ? error.message : String(error)}`,
+            );
             console.warn(
               `[OpenExcel bridge:${requestId}] upstream response error after=${Date.now() - startedAt}ms: ${error instanceof Error ? error.message : String(error)}`,
             );
             if (!response.destroyed) response.destroy(error);
           });
           upstreamResponse.on("aborted", () => {
+            traceLog(traceId, startedAt, "bridge.upstream-response-aborted");
             console.warn(`[OpenExcel bridge:${requestId}] upstream response aborted after=${Date.now() - startedAt}ms`);
             if (!response.destroyed) response.destroy();
           });
@@ -298,7 +333,26 @@ function createLocalCorsBridgeMiddleware() {
         },
       );
 
+      upstreamRequest.on("socket", (socket) => {
+        traceLog(traceId, startedAt, "bridge.socket-assigned", `reused=${upstreamRequest.reusedSocket ? "yes" : "no"}`);
+        socket.once("lookup", (error, _address, _family, _host) => {
+          traceLog(
+            traceId,
+            startedAt,
+            "bridge.socket-lookup",
+            error ? `error=${error.message}` : "ok",
+          );
+        });
+        socket.once("connect", () => {
+          traceLog(traceId, startedAt, "bridge.socket-connect");
+        });
+        socket.once("secureConnect", () => {
+          traceLog(traceId, startedAt, "bridge.socket-tls");
+        });
+      });
+
       headerTimer = setTimeout(() => {
+        traceLog(traceId, startedAt, "bridge.upstream-header-timeout", `limit=${upstreamHeaderTimeoutMs}ms`);
         const timeoutError = new Error(`Timed out waiting for upstream response headers after ${upstreamHeaderTimeoutMs}ms`);
         timeoutError.code = "OPENEXCEL_UPSTREAM_HEADER_TIMEOUT";
         upstreamRequest.destroy(timeoutError);
@@ -306,6 +360,12 @@ function createLocalCorsBridgeMiddleware() {
 
       upstreamRequest.on("error", (error) => {
         if (headerTimer) clearTimeout(headerTimer);
+        traceLog(
+          traceId,
+          startedAt,
+          "bridge.upstream-request-error",
+          `error=${error instanceof Error ? error.message : String(error)}`,
+        );
         console.warn(
           `[OpenExcel bridge:${requestId}] request failed after=${Date.now() - startedAt}ms: ${error instanceof Error ? error.message : String(error)}`,
         );
@@ -322,11 +382,13 @@ function createLocalCorsBridgeMiddleware() {
       });
 
       request.on("aborted", () => {
+        traceLog(traceId, startedAt, "bridge.client-aborted");
         if (headerTimer) clearTimeout(headerTimer);
         upstreamRequest.destroy();
       });
       response.on("close", () => {
         if (!response.writableEnded) {
+          traceLog(traceId, startedAt, "bridge.client-closed");
           if (headerTimer) clearTimeout(headerTimer);
           upstreamRequest.destroy();
         }
