@@ -99,7 +99,7 @@ assert.match(
 assert.match(
   settings,
   /const forgetPersistedConfigBeforeSessionRestore[\s\S]*if \(!state\.currentSession\) clearSavedConfig\("byok"\)/,
-  "Pre-ready provider/credential invalidation must prevent stale persisted config from reactivating",
+  "Pre-ready provider/credential invalidation must prevent stale config from reactivating",
 );
 const providerChange = section(settings, "const handleProviderChange", "const handleAuthMethodChange");
 assert.match(providerChange, /forgetPersistedConfigBeforeSessionRestore\(\)/, "Provider edits before restore must block stale config");
@@ -128,6 +128,11 @@ assert.match(
   /parsed\.protocol !== "http:" && parsed\.protocol !== "https:"/,
   "Gateway URL protocol validation must allow both HTTP and HTTPS",
 );
+assert.match(
+  discovery,
+  /createCorsProxyFetch\([\s\S]*gatewayEndpoint: true[\s\S]*omitAuthentication: true/,
+  "Gateway model discovery must use the Gateway-aware fetch transport",
+);
 assert.match(discovery, /options\.signal/, "Model discovery requests must accept cancellation");
 assert.equal(discovery.includes("saveOAuthCredentials(config.provider, refreshed)"), false, "Discovery refresh must not resurrect logged-out OAuth credentials");
 assert.match(discovery, /usesAmbientFetchTransport/, "Ambient-fetch-only adapters need explicit capability gating");
@@ -145,10 +150,27 @@ assert.match(corsProxy, /details\.provider === "google-vertex"/, "Google Vertex 
 assert.match(corsProxy, /return globalThis\.fetch/, "Unsupported custom-fetch adapters must receive the ambient fetch identity");
 assert.match(
   corsProxy,
+  /behavior\.gatewayEndpoint && isHttpUrl\(targetUrl\)/,
+  "HTTP Gateway requests must be routed through the local bridge",
+);
+assert.match(
+  corsProxy,
+  /gatewayEndpoint: behavior\.gatewayEndpoint \|\| \(behavior\.omitAuthentication && !behavior\.customEndpoint\)/,
+  "Gateway runtime requests must inherit Gateway routing even from the existing no-auth call shape",
+);
+assert.match(corsProxy, /GATEWAY_ENDPOINT_HEADER/, "Gateway bridge traffic needs an explicit trusted marker");
+assert.match(
+  corsProxy,
   /LOCAL_BRIDGE_RESPONSE_START_GRACE_SECONDS/,
   "Browser bridge timeout needs grace beyond the bridge upstream deadline",
 );
 assert.match(bridge, /isTrustedTaskpaneRequest/, "Local bridge must enforce same-origin taskpane trust");
+assert.match(bridge, /isTrustedGatewayEndpointRequest/, "Local bridge must recognize trusted Gateway requests");
+assert.match(
+  bridge,
+  /trustedInternalEndpoint = trustedCustomEndpoint \|\| trustedGatewayEndpoint/,
+  "Custom and Gateway bridge requests must share the private-network allowance only after trust checks",
+);
 assert.match(bridge, /response\.flushHeaders\(\)/, "Local bridge must expose upstream headers before delayed SSE body bytes");
 
 assert.match(oauth, /https:\/\/claude\.com\/cai\/oauth\/authorize/, "Anthropic authorization URL must match the current Claude flow");
