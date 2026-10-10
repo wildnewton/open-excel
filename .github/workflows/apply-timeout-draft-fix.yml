@@ -20,39 +20,36 @@ jobs:
           fetch-depth: 0
 
       - name: Patch timeout draft behavior and regression guard
-        shell: python
         run: |
+          python - <<'PY'
           from pathlib import Path
 
           settings_path = Path("src/taskpane/components/chat/settings-panel.tsx")
           settings = settings_path.read_text()
-          old = '''                cancelDiscovery();
+          old = """                cancelDiscovery();
                 if (isCustom) clearProviderConfig();
-                setResponseStartTimeoutSeconds(Math.min(3600, next));'''
-          new = '''                cancelDiscovery();
-                setResponseStartTimeoutSeconds(Math.min(3600, next));'''
+                setResponseStartTimeoutSeconds(Math.min(3600, next));"""
+          new = """                cancelDiscovery();
+                setResponseStartTimeoutSeconds(Math.min(3600, next));"""
           if old not in settings:
               raise SystemExit("Expected Custom Endpoint timeout handler not found")
-          settings = settings.replace(old, new, 1)
-          settings_path.write_text(settings)
+          settings_path.write_text(settings.replace(old, new, 1))
 
           test_path = Path("scripts/test-review-regressions.js")
           tests = test_path.read_text()
-          anchor = '''assert.equal(clearProvider.includes("isStreamingRef.current = false"), false, "Invalidating config must not fake Agent idle");
-'''
-          addition = '''assert.equal(clearProvider.includes("isStreamingRef.current = false"), false, "Invalidating config must not fake Agent idle");
-assert.equal(
-  settings.includes(
-    'cancelDiscovery();\\n                if (isCustom) clearProviderConfig();\\n                setResponseStartTimeoutSeconds',
-  ),
-  false,
-  "Editing Custom Endpoint response-start timeout must not abort the active request",
-);
+          anchor = 'assert.equal(clearProvider.includes("isStreamingRef.current = false"), false, "Invalidating config must not fake Agent idle");\n'
+          addition = anchor + '''assert.equal(
+            settings.includes(
+              'cancelDiscovery();\\n                if (isCustom) clearProviderConfig();\\n                setResponseStartTimeoutSeconds',
+            ),
+            false,
+            "Editing Custom Endpoint response-start timeout must not abort the active request",
+          );
 '''
           if anchor not in tests:
               raise SystemExit("Expected regression-test anchor not found")
-          tests = tests.replace(anchor, addition, 1)
-          test_path.write_text(tests)
+          test_path.write_text(tests.replace(anchor, addition, 1))
+          PY
 
       - name: Run targeted regression checks
         run: node scripts/test-review-regressions.js
