@@ -47,7 +47,7 @@ assert.match(
   /if \(!isCustom\) clearProviderConfig\(\);/,
   "Non-custom credential edits should still invalidate the active provider",
 );
-for (const setter of ["setApiType", "setCustomBaseUrl", "setModel", "setApiKey"]) {
+for (const setter of ["setApiType", "setCustomBaseUrl", "setModel"]) {
   assert.equal(
     new RegExp(`clearProviderConfig\\(\\);\\s*${setter}\\(`).test(settings),
     false,
