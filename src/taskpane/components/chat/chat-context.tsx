@@ -16,7 +16,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { createCorsProxyFetch } from "../../../lib/cors-proxy";
 import type { DirtyRange } from "../../../lib/dirty-tracker";
 import { getWorkbookMetadata, navigateTo } from "../../../lib/excel/api";
-import { loadOAuthCredentials, refreshOAuthToken, saveOAuthCredentials } from "../../../lib/oauth";
+import { loadOAuthCredentials, refreshOAuthToken } from "../../../lib/oauth";
 import {
   type ChatSession,
   createSession,
@@ -177,20 +177,18 @@ function extractPartsFromAssistantMessage(message: AgentMessage, existingParts: 
 }
 
 export function ChatProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<ChatState>(() => {
-    const saved = loadSavedConfig();
-    const validConfig = isConfigReady(saved) ? saved : null;
-    return {
-      messages: [],
-      isStreaming: false,
-      error: null,
-      providerConfig: validConfig,
-      sessionStats: INITIAL_STATS,
-      currentSession: null,
-      sessions: [],
-      sheetNames: {},
-    };
-  });
+  const [state, setState] = useState<ChatState>(() => ({
+    messages: [],
+    isStreaming: false,
+    error: null,
+    // Do not enable input from synchronous localStorage before the matching
+    // IndexedDB session/native Agent transcript has been restored.
+    providerConfig: null,
+    sessionStats: INITIAL_STATS,
+    currentSession: null,
+    sessions: [],
+    sheetNames: {},
+  }));
 
   const agentRef = useRef<Agent | null>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
@@ -199,7 +197,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const workbookIdRef = useRef<string | null>(null);
   const sessionLoadedRef = useRef(false);
   const currentSessionIdRef = useRef<string | null>(null);
-  const followModeRef = useRef(state.providerConfig?.followMode ?? true);
+  const followModeRef = useRef(true);
   const restoredAgentMessagesRef = useRef<AgentMessage[]>([]);
   const suppressNextSessionSaveRef = useRef(false);
 
@@ -411,7 +409,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       responseStartTimeoutSeconds: config.responseStartTimeoutSeconds,
       signal,
     });
-    saveOAuthCredentials(config.provider, refreshed);
     return refreshed.access;
   }, []);
 
@@ -763,29 +760,26 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         const session = await getOrCreateCurrentSession(id);
         currentSessionIdRef.current = session.id;
         const sessions = await listSessions(id);
-        if (!isStreamingRef.current) {
-          restoreSessionAgentMessages(session.agentMessages);
-        } else {
-          restoredAgentMessagesRef.current = [...session.agentMessages];
-        }
+        restoreSessionAgentMessages(session.agentMessages);
         setState((prev) => ({
           ...prev,
           messages: session.messages,
           currentSession: session,
           sessions,
         }));
+
+        // Only enable the saved runtime after the matching display/native
+        // transcript has been restored, so a fast first send cannot be overwritten
+        // by the asynchronous IndexedDB startup load.
+        const saved = loadSavedConfig();
+        if (isConfigReady(saved)) {
+          setProviderConfig(saved);
+        }
       })
       .catch((err) => {
         console.error("[Chat] Failed to load session:", err);
       });
-  }, [restoreSessionAgentMessages]);
-
-  useEffect(() => {
-    const saved = loadSavedConfig();
-    if (isConfigReady(saved)) {
-      setProviderConfig(saved);
-    }
-  }, [setProviderConfig]);
+  }, [restoreSessionAgentMessages, setProviderConfig]);
 
   const getSheetName = useCallback(
     (sheetId: number): string | undefined => state.sheetNames[sheetId],
