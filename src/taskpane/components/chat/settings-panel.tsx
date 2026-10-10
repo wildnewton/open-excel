@@ -1010,7 +1010,7 @@ function GatewaySettingsPanel() {
               type="url"
               value={gatewayUrl}
               onChange={(e) => handleGatewayUrlChange(e.target.value)}
-              placeholder="https://ai.company.internal/v1"
+              placeholder="http://ai.company.internal/v1"
               className="w-full bg-(--chat-input-bg) text-(--chat-text-primary)
                          text-sm px-3 py-2 border border-(--chat-border)
                          placeholder:text-(--chat-text-muted)
@@ -1018,8 +1018,8 @@ function GatewaySettingsPanel() {
               style={inputStyle}
             />
             <p className="text-[10px] text-(--chat-text-muted) mt-1">
-              OpenAI-compatible HTTPS endpoint. If /v1 is omitted, OpenExcel adds it automatically. The gateway must
-              permit CORS from the add-in origin.
+              OpenAI-compatible HTTP or HTTPS endpoint. If /v1 is omitted, OpenExcel adds it automatically. The gateway
+              must permit CORS from the add-in origin; HTTP can still be blocked by the Office WebView's mixed-content policy.
             </p>
           </label>
 
