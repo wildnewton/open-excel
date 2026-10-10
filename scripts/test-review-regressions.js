@@ -122,7 +122,12 @@ assert.match(storage, /agentMessages: AgentMessage\[\]/, "Sessions must persist 
 assert.match(discovery, /reasoning: true,[\s\S]*input: \["text", "image"\]/, "Custom Endpoint capabilities regressed");
 assert.equal(discovery.includes("record.supported_in_api === false"), false, "ChatGPT picker must not filter by public API support");
 assert.match(discovery, /\[404, 405, 501\]/, "Unsupported /models endpoints must fall back deliberately");
-assert.match(discovery, /Gateway URL must use HTTPS/, "Gateway URL must enforce HTTPS");
+assert.match(discovery, /Gateway URL must use HTTP or HTTPS/, "Gateway URL must accept HTTP and HTTPS");
+assert.match(
+  discovery,
+  /parsed\.protocol !== "http:" && parsed\.protocol !== "https:"/,
+  "Gateway URL protocol validation must allow both HTTP and HTTPS",
+);
 assert.match(discovery, /options\.signal/, "Model discovery requests must accept cancellation");
 assert.equal(discovery.includes("saveOAuthCredentials(config.provider, refreshed)"), false, "Discovery refresh must not resurrect logged-out OAuth credentials");
 assert.match(discovery, /usesAmbientFetchTransport/, "Ambient-fetch-only adapters need explicit capability gating");
