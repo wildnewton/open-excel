@@ -1,6 +1,6 @@
 import { getModel, getModels, type Model } from "@earendil-works/pi-ai/compat";
 import { buildCorsProxyUrl } from "../../../lib/cors-proxy";
-import { loadOAuthCredentials, refreshOAuthToken, saveOAuthCredentials } from "../../../lib/oauth";
+import { loadOAuthCredentials, refreshOAuthToken } from "../../../lib/oauth";
 import { DEFAULT_RESPONSE_START_TIMEOUT_SECONDS, fetchWithResponseStartTimeout } from "../../../lib/request-timeout";
 import type { ByokProviderConfig, GatewayProviderConfig, ProviderConfig } from "./config";
 
@@ -17,11 +17,16 @@ export interface ModelDiscoveryResult {
   message?: string;
 }
 
+export interface ModelDiscoveryOptions {
+  signal?: AbortSignal;
+}
+
 type JsonRecord = Record<string, unknown>;
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const GATEWAY_COMPAT_API_KEY = "openexcel-gateway-no-auth";
 const CHATGPT_CODEX_MODELS_URL = "https://chatgpt.com/backend-api/codex/models";
+const AMBIENT_FETCH_APIS = new Set(["google-generative-ai", "google-vertex"]);
 
 // ChatGPT's Codex model catalog requires the Codex client_version query parameter.
 // Keep this isolated so it can be updated when the upstream contract changes; it
@@ -264,8 +269,13 @@ async function fetchJson(
   url: string,
   headers: Record<string, string>,
   responseStartTimeoutSeconds: number = DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
+  signal?: AbortSignal,
 ): Promise<unknown> {
-  const response = await fetchWithResponseStartTimeout(url, { method: "GET", headers }, responseStartTimeoutSeconds);
+  const response = await fetchWithResponseStartTimeout(
+    url,
+    { method: "GET", headers, signal },
+    responseStartTimeoutSeconds,
+  );
   if (!response.ok) {
     let detail = "";
     try {
@@ -284,19 +294,27 @@ function isUnsupportedModelListError(error: unknown): boolean {
   return error instanceof ModelDiscoveryHttpError && [404, 405, 501].includes(error.status);
 }
 
-async function configWithFreshOAuthToken(config: ByokProviderConfig): Promise<ByokProviderConfig> {
+async function configWithFreshOAuthToken(
+  config: ByokProviderConfig,
+  options: ModelDiscoveryOptions,
+): Promise<ByokProviderConfig> {
   if (config.authMethod !== "oauth") return config;
 
   const stored = loadOAuthCredentials(config.provider);
   if (!stored) throw new Error("OAuth session is no longer available. Please sign in again.");
   if (Date.now() < stored.expires) return { ...config, apiKey: stored.access };
 
-  const refreshed = await refreshOAuthToken(config.provider, stored.refresh, config.proxyUrl, config.useProxy);
-  saveOAuthCredentials(config.provider, refreshed);
+  const refreshed = await refreshOAuthToken(config.provider, stored.refresh, config.proxyUrl, config.useProxy, {
+    responseStartTimeoutSeconds: config.responseStartTimeoutSeconds,
+    signal: options.signal,
+  });
   return { ...config, apiKey: refreshed.access };
 }
 
-async function discoverChatGptCodexModels(config: ByokProviderConfig): Promise<ModelDiscoveryResult> {
+async function discoverChatGptCodexModels(
+  config: ByokProviderConfig,
+  options: ModelDiscoveryOptions,
+): Promise<ModelDiscoveryResult> {
   if (config.authMethod !== "oauth") {
     throw new Error("OpenAI (ChatGPT) model discovery requires the existing OAuth sign-in flow.");
   }
@@ -312,7 +330,12 @@ async function discoverChatGptCodexModels(config: ByokProviderConfig): Promise<M
   const accountId = extractChatGptAccountId(config.apiKey);
   if (accountId) headers["ChatGPT-Account-ID"] = accountId;
 
-  const payload = await fetchJson(buildCorsProxyUrl(url, config), headers, config.responseStartTimeoutSeconds);
+  const payload = await fetchJson(
+    buildCorsProxyUrl(url, config),
+    headers,
+    config.responseStartTimeoutSeconds,
+    options.signal,
+  );
   const models = parseChatGptCodexModels(payload);
   if (models.length === 0) {
     throw new Error("ChatGPT returned no selectable Codex models for this account.");
@@ -325,12 +348,15 @@ async function discoverChatGptCodexModels(config: ByokProviderConfig): Promise<M
   };
 }
 
-export async function discoverByokModels(config: ByokProviderConfig): Promise<ModelDiscoveryResult> {
-  const activeConfig = await configWithFreshOAuthToken(config);
+export async function discoverByokModels(
+  config: ByokProviderConfig,
+  options: ModelDiscoveryOptions = {},
+): Promise<ModelDiscoveryResult> {
+  const activeConfig = await configWithFreshOAuthToken(config, options);
 
   if (activeConfig.provider === "openai-codex") {
     if (activeConfig.authMethod === "oauth") {
-      return discoverChatGptCodexModels(activeConfig);
+      return discoverChatGptCodexModels(activeConfig, options);
     }
     // The account-scoped ChatGPT catalog is OAuth-only. Preserve the existing
     // API-key/manual path rather than forcing API-key users through OAuth.
@@ -374,6 +400,7 @@ export async function discoverByokModels(config: ByokProviderConfig): Promise<Mo
       buildCorsProxyUrl(targetUrl, activeConfig),
       headers,
       activeConfig.responseStartTimeoutSeconds,
+      options.signal,
     );
   } catch (error) {
     if (isUnsupportedModelListError(error)) {
@@ -393,14 +420,50 @@ export async function discoverByokModels(config: ByokProviderConfig): Promise<Mo
 export async function discoverGatewayModels(
   gatewayUrl: string,
   responseStartTimeoutSeconds: number = DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
+  options: ModelDiscoveryOptions = {},
 ): Promise<ModelDiscoveryResult> {
   const baseUrl = normalizeGatewayBaseUrl(gatewayUrl);
   if (!baseUrl) throw new Error("Enter a Gateway URL first.");
 
-  const payload = await fetchJson(`${baseUrl}/models`, { Accept: "application/json" }, responseStartTimeoutSeconds);
+  const payload = await fetchJson(
+    `${baseUrl}/models`,
+    { Accept: "application/json" },
+    responseStartTimeoutSeconds,
+    options.signal,
+  );
   const models = parseOpenAICompatibleModels(payload, false);
   if (models.length === 0) throw new Error("The Gateway returned no models.");
   return { models, source: "live" };
+}
+
+export function usesAmbientFetchTransport(config: ByokProviderConfig): boolean {
+  if (config.provider === "google" || config.provider === "google-vertex") return true;
+  return config.provider === "custom" && AMBIENT_FETCH_APIS.has(config.apiType ?? "");
+}
+
+export function getRuntimeTransportIssue(config: ByokProviderConfig): string | null {
+  if (!usesAmbientFetchTransport(config)) return null;
+
+  if (config.useProxy) {
+    return "Google Generative AI / Vertex requires the adapter's native fetch, so runtime CORS proxying is not supported. Turn CORS Proxy off before applying this model.";
+  }
+
+  if (config.provider !== "custom") return null;
+
+  if (!config.apiKey.trim()) {
+    return "Google Generative AI / Vertex custom endpoints cannot use no-auth mode because the adapter requires its native authenticated transport.";
+  }
+
+  try {
+    const parsed = new URL(config.customBaseUrl?.trim() || "");
+    if (parsed.protocol !== "https:") {
+      return "Google Generative AI / Vertex custom endpoints must use direct HTTPS; HTTP/local-bridge transport is not supported by this adapter.";
+    }
+  } catch {
+    return "Google Generative AI / Vertex custom endpoints require a valid absolute HTTPS Base URL.";
+  }
+
+  return null;
 }
 
 function createCustomByokModel(config: ByokProviderConfig): Model<any> {
@@ -465,6 +528,10 @@ function createGatewayModel(config: GatewayProviderConfig): Model<any> {
 
 export function resolveConfiguredModel(config: ProviderConfig): Model<any> {
   if (config.mode === "gateway") return createGatewayModel(config);
+
+  const transportIssue = getRuntimeTransportIssue(config);
+  if (transportIssue) throw new Error(transportIssue);
+
   if (config.provider === "custom") return createCustomByokModel(config);
 
   const known = builtInModel(config.provider, config.model);
