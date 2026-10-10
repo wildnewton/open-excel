@@ -17,6 +17,9 @@ const settings = read("src/taskpane/components/chat/settings-panel.tsx");
 const chat = read("src/taskpane/components/chat/chat-context.tsx");
 const storage = read("src/lib/storage/db.ts");
 const discovery = read("src/taskpane/components/chat/model-discovery.ts");
+const corsProxy = read("src/lib/cors-proxy.ts");
+const oauth = read("src/lib/oauth/index.ts");
+const bridge = read("scripts/local-cors-bridge.js");
 const webpackConfig = read("webpack.config.js");
 
 assert.equal(settings.includes("saveConfig("), false, "Settings drafts must not persist directly");
@@ -27,6 +30,7 @@ assert.match(chat, /saveConfig\(config\);/, "Only applied runtime config should 
 const clearProvider = section(chat, "const clearProviderConfig", "const abort");
 assert.equal(clearProvider.includes("agentRef.current = null"), false, "Invalidating config must not discard transcript");
 assert.equal(clearProvider.includes("isStreamingRef.current = false"), false, "Invalidating config must not fake Agent idle");
+assert.equal(clearProvider.includes("agentRef.current.abort()"), false, "Editing settings must not abort an active request");
 assert.equal(
   settings.includes(
     'cancelDiscovery();\n                if (isCustom) clearProviderConfig();\n                setResponseStartTimeoutSeconds',
@@ -37,6 +41,7 @@ assert.equal(
 
 const abortSection = section(chat, "const abort", "const sendMessage");
 assert.equal(abortSection.includes("isStreamingRef.current = false"), false, "Abort must wait for agent_end");
+assert.match(chat, /getActiveApiKey\(cfg, options\?\.signal\)/, "OAuth refresh must inherit the Agent abort signal");
 assert.match(chat, /waitForIdle\(\)/, "Reset after abort must wait for the Agent to become idle");
 assert.match(chat, /suppressNextSessionSaveRef/, "Clear must suppress the stale post-abort autosave race");
 assert.match(chat, /restoreSessionAgentMessages/, "Legacy or empty sessions must preserve the Agent system baseline");
@@ -58,6 +63,20 @@ assert.match(discovery, /reasoning: true,[\s\S]*input: \["text", "image"\]/, "Cu
 assert.equal(discovery.includes("record.supported_in_api === false"), false, "ChatGPT picker must not filter by public API support");
 assert.match(discovery, /\[404, 405, 501\]/, "Unsupported /models endpoints must fall back deliberately");
 assert.match(discovery, /Gateway URL must use HTTPS/, "Gateway URL must enforce HTTPS");
+
+assert.match(corsProxy, /requiresAmbientFetch/, "Runtime fetch injection must be adapter-aware");
+assert.match(corsProxy, /details\.provider === "google"/, "Google Generative AI must retain ambient fetch");
+assert.match(corsProxy, /details\.provider === "google-vertex"/, "Google Vertex must retain ambient fetch");
+assert.match(corsProxy, /return globalThis\.fetch/, "Unsupported custom-fetch adapters must receive the ambient fetch identity");
+assert.match(
+  corsProxy,
+  /LOCAL_BRIDGE_RESPONSE_START_GRACE_SECONDS/,
+  "Browser bridge timeout needs grace beyond the bridge upstream deadline",
+);
+assert.match(bridge, /isTrustedTaskpaneRequest/, "Local bridge must enforce same-origin taskpane trust");
+assert.match(bridge, /response\.flushHeaders\(\)/, "Local bridge must expose upstream headers before delayed SSE body bytes");
+assert.match(oauth, /createCorsProxyFetch/, "OAuth refresh must use the bounded/cancellable fetch path");
+assert.match(oauth, /signal: options\.signal/, "OAuth refresh must honor caller cancellation");
 assert.match(webpackConfig, /dev \|\| openExcelMode === "byok"/, "Gateway production build must not package BYOK manifests");
 
 console.log("Review regression checks passed");
