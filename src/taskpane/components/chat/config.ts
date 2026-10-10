@@ -77,6 +77,10 @@ export const API_TYPES = [
 const BYOK_STORAGE_KEY = "openexcel-provider-config";
 const GATEWAY_STORAGE_KEY = "openexcel-gateway-config";
 
+function storageKeyForMode(mode: ProviderConfig["mode"]): string {
+  return mode === "gateway" ? GATEWAY_STORAGE_KEY : BYOK_STORAGE_KEY;
+}
+
 function parseThinkingLevel(value: unknown): ThinkingLevel {
   return value === "low" || value === "medium" || value === "high" ? value : "none";
 }
@@ -87,8 +91,7 @@ function parsePositiveNumber(value: unknown): number | undefined {
 
 export function loadSavedConfig(): ProviderConfig | null {
   try {
-    const storageKey = APP_MODE === "gateway" ? GATEWAY_STORAGE_KEY : BYOK_STORAGE_KEY;
-    const saved = localStorage.getItem(storageKey);
+    const saved = localStorage.getItem(storageKeyForMode(APP_MODE));
     if (!saved) return null;
 
     const parsed = JSON.parse(saved) as Record<string, unknown>;
@@ -139,9 +142,12 @@ export function loadSavedConfig(): ProviderConfig | null {
 }
 
 export function saveConfig(config: ProviderConfig): void {
-  const storageKey = config.mode === "gateway" ? GATEWAY_STORAGE_KEY : BYOK_STORAGE_KEY;
   const persisted = config.mode === "byok" && config.authMethod === "oauth" ? { ...config, apiKey: "" } : config;
-  localStorage.setItem(storageKey, JSON.stringify(persisted));
+  localStorage.setItem(storageKeyForMode(config.mode), JSON.stringify(persisted));
+}
+
+export function clearSavedConfig(mode: ProviderConfig["mode"] = APP_MODE): void {
+  localStorage.removeItem(storageKeyForMode(mode));
 }
 
 export function isConfigReady(config: ProviderConfig | null): config is ProviderConfig {
