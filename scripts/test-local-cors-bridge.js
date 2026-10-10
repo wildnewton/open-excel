@@ -35,6 +35,7 @@ function requestBridge(port, targetUrl) {
           Origin: `https://127.0.0.1:${port}`,
           "Sec-Fetch-Site": "same-origin",
           "X-OpenExcel-Custom-Endpoint": "1",
+          "X-OpenExcel-Trace-Id": "ox-test-trace",
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(body),
         },
@@ -68,6 +69,7 @@ async function main() {
       requestBody += chunk;
     });
     request.on("end", () => {
+      assert.equal(request.headers["x-openexcel-trace-id"], undefined);
       const parsed = JSON.parse(requestBody);
       assert.equal(parsed.stream, true);
       assert.equal(parsed.model, "smoke-model");
