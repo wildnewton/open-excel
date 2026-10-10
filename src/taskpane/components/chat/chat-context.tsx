@@ -196,6 +196,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const pendingConfigRef = useRef<ProviderConfig | null>(null);
   const workbookIdRef = useRef<string | null>(null);
   const sessionLoadedRef = useRef(false);
+  const sessionReadyRef = useRef(false);
   const currentSessionIdRef = useRef<string | null>(null);
   const followModeRef = useRef(true);
   const restoredAgentMessagesRef = useRef<AgentMessage[]>([]);
@@ -503,6 +504,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const setProviderConfig = useCallback(
     (config: ProviderConfig) => {
+      if (!sessionReadyRef.current) {
+        // Settings can mount before IndexedDB finishes. Hold the newest requested
+        // config, but do not expose it in state or create an Agent yet.
+        pendingConfigRef.current = config;
+        return;
+      }
       if (isStreamingRef.current) {
         pendingConfigRef.current = config;
         setState((prev) => ({ ...prev, providerConfig: config }));
@@ -768,15 +775,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           sessions,
         }));
 
-        // Only enable the saved runtime after the matching display/native
-        // transcript has been restored, so a fast first send cannot be overwritten
-        // by the asynchronous IndexedDB startup load.
         const saved = loadSavedConfig();
-        if (isConfigReady(saved)) {
-          setProviderConfig(saved);
+        const startupConfig = pendingConfigRef.current ?? (isConfigReady(saved) ? saved : null);
+        sessionReadyRef.current = true;
+        if (startupConfig) {
+          setProviderConfig(startupConfig);
         }
       })
       .catch((err) => {
+        // Do not enable the runtime after a failed session restore: mixing a blank
+        // Agent transcript with persisted display history is worse than requiring
+        // the user to reopen and retry initialization.
         console.error("[Chat] Failed to load session:", err);
       });
   }, [restoreSessionAgentMessages, setProviderConfig]);
