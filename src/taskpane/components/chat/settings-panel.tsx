@@ -16,11 +16,18 @@ import {
   API_TYPES,
   APP_MODE,
   type ByokProviderConfig,
+  clearSavedConfig,
   type GatewayProviderConfig,
   loadSavedConfig,
   type ThinkingLevel,
 } from "./config";
-import { type DiscoveredModel, discoverByokModels, discoverGatewayModels } from "./model-discovery";
+import {
+  type DiscoveredModel,
+  discoverByokModels,
+  discoverGatewayModels,
+  getRuntimeTransportIssue,
+  usesAmbientFetchTransport,
+} from "./model-discovery";
 
 const THINKING_LEVELS: { value: ThinkingLevel; label: string }[] = [
   { value: "none", label: "None" },
@@ -117,31 +124,35 @@ function ByokSettingsPanel() {
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [manualModel, setManualModel] = useState("");
   const discoveryGenerationRef = useRef(0);
+  const discoveryAbortRef = useRef<AbortController | null>(null);
+  const oauthExchangeGenerationRef = useRef(0);
+  const oauthExchangeAbortRef = useRef<AbortController | null>(null);
 
   const followMode = state.providerConfig?.followMode ?? savedByok?.followMode ?? true;
   const isCustom = provider === "custom";
   const hasOAuth = provider in OAUTH_PROVIDERS;
   const showApiKeyInput = !(hasOAuth && authMethod === "oauth");
+  const draftConfig: ByokProviderConfig = {
+    mode: "byok",
+    provider,
+    apiKey,
+    model,
+    useProxy,
+    proxyUrl,
+    thinking,
+    followMode,
+    authMethod,
+    apiType,
+    customBaseUrl,
+    responseStartTimeoutSeconds,
+    ...metadataForModel(models, model),
+  };
+  const ambientFetchRuntime = provider.length > 0 && usesAmbientFetchTransport(draftConfig);
+  const runtimeTransportIssue = provider.length > 0 ? getRuntimeTransportIssue(draftConfig) : null;
 
   useEffect(() => {
-    const config: ByokProviderConfig = {
-      mode: "byok",
-      provider,
-      apiKey,
-      model,
-      useProxy,
-      proxyUrl,
-      thinking,
-      followMode,
-      authMethod,
-      apiType,
-      customBaseUrl,
-      responseStartTimeoutSeconds,
-      ...metadataForModel(models, model),
-    };
-
     if (provider === "custom") return;
-    if (provider && apiKey && model) setProviderConfig(config);
+    if (provider && apiKey && model && !runtimeTransportIssue) setProviderConfig(draftConfig);
   }, [
     provider,
     apiKey,
@@ -155,12 +166,28 @@ function ByokSettingsPanel() {
     apiType,
     customBaseUrl,
     responseStartTimeoutSeconds,
+    runtimeTransportIssue,
     setProviderConfig,
   ]);
 
+  useEffect(() => {
+    return () => {
+      discoveryAbortRef.current?.abort();
+      oauthExchangeAbortRef.current?.abort();
+    };
+  }, []);
+
   const cancelDiscovery = () => {
     discoveryGenerationRef.current += 1;
+    discoveryAbortRef.current?.abort();
+    discoveryAbortRef.current = null;
     setIsDiscovering(false);
+  };
+
+  const cancelOAuthExchange = () => {
+    oauthExchangeGenerationRef.current += 1;
+    oauthExchangeAbortRef.current?.abort();
+    oauthExchangeAbortRef.current = null;
   };
 
   const invalidateDiscovery = () => {
@@ -174,6 +201,7 @@ function ByokSettingsPanel() {
   };
 
   const handleProviderChange = (newProvider: string) => {
+    cancelOAuthExchange();
     clearProviderConfig();
     setProvider(newProvider);
     setApiKey("");
@@ -207,6 +235,7 @@ function ByokSettingsPanel() {
   };
 
   const handleAuthMethodChange = (newMethod: "apikey" | "oauth") => {
+    cancelOAuthExchange();
     clearProviderConfig();
     invalidateDiscovery();
     setApiKey("");
@@ -228,6 +257,8 @@ function ByokSettingsPanel() {
   };
 
   const startOAuthLogin = async () => {
+    cancelOAuthExchange();
+    setOauthCodeInput("");
     try {
       const { verifier, challenge } = await generatePKCE();
       const { url, oauthState } = buildAuthorizationUrl(provider, challenge, verifier);
@@ -240,18 +271,26 @@ function ByokSettingsPanel() {
 
   const submitOAuthCode = async () => {
     if (oauthFlow.step !== "awaiting-code" || !oauthCodeInput.trim()) return;
-    const { verifier } = oauthFlow;
+    const flow = oauthFlow;
+    const generation = oauthExchangeGenerationRef.current + 1;
+    oauthExchangeGenerationRef.current = generation;
+    oauthExchangeAbortRef.current?.abort();
+    const controller = new AbortController();
+    oauthExchangeAbortRef.current = controller;
     setOauthFlow({ step: "exchanging" });
 
     try {
       const creds = await exchangeOAuthCode({
         provider,
         rawInput: oauthCodeInput.trim(),
-        verifier,
-        expectedState: oauthFlow.oauthState,
+        verifier: flow.verifier,
+        expectedState: flow.oauthState,
         useProxy,
         proxyUrl,
+        responseStartTimeoutSeconds,
+        signal: controller.signal,
       });
+      if (generation !== oauthExchangeGenerationRef.current || controller.signal.aborted) return;
       saveOAuthCredentials(provider, creds);
       setOauthFlow({ step: "connected" });
       setOauthCodeInput("");
@@ -259,17 +298,39 @@ function ByokSettingsPanel() {
       setAuthMethod("oauth");
       invalidateDiscovery();
     } catch (err) {
+      if (generation !== oauthExchangeGenerationRef.current || controller.signal.aborted) return;
       setOauthFlow({ step: "error", message: err instanceof Error ? err.message : "OAuth failed" });
+    } finally {
+      if (generation === oauthExchangeGenerationRef.current) oauthExchangeAbortRef.current = null;
     }
   };
 
   const logoutOAuth = () => {
+    cancelOAuthExchange();
+    cancelDiscovery();
     clearProviderConfig();
+    clearSavedConfig("byok");
     removeOAuthCredentials(provider);
     setOauthFlow({ step: "idle" });
     setAuthMethod("apikey");
     setApiKey("");
     invalidateDiscovery();
+  };
+
+  const forgetSavedCredentials = () => {
+    cancelOAuthExchange();
+    cancelDiscovery();
+    clearProviderConfig();
+    clearSavedConfig("byok");
+    if (provider && authMethod === "oauth") removeOAuthCredentials(provider);
+    setApiKey("");
+    setModel("");
+    setModels([]);
+    setDiscoverySource(null);
+    setDiscoveryMessage(null);
+    setDiscoveryError(null);
+    setManualModel("");
+    setOauthFlow({ step: "idle" });
   };
 
   const handleApiKeyChange = (newApiKey: string) => {
@@ -279,28 +340,18 @@ function ByokSettingsPanel() {
   };
 
   const handleDiscoverModels = async () => {
+    cancelDiscovery();
     const generation = discoveryGenerationRef.current + 1;
     discoveryGenerationRef.current = generation;
+    const controller = new AbortController();
+    discoveryAbortRef.current = controller;
     setIsDiscovering(true);
     setDiscoveryError(null);
     setDiscoveryMessage(null);
 
     try {
-      const result = await discoverByokModels({
-        mode: "byok",
-        provider,
-        apiKey,
-        model,
-        useProxy,
-        proxyUrl,
-        thinking,
-        followMode,
-        authMethod,
-        apiType,
-        customBaseUrl,
-        responseStartTimeoutSeconds,
-      });
-      if (generation !== discoveryGenerationRef.current) return;
+      const result = await discoverByokModels(draftConfig, { signal: controller.signal });
+      if (generation !== discoveryGenerationRef.current || controller.signal.aborted) return;
       setModels(result.models);
       setDiscoverySource(result.source);
       setDiscoveryMessage(result.message ?? null);
@@ -308,10 +359,13 @@ function ByokSettingsPanel() {
         setModel(result.models[0]?.id ?? "");
       }
     } catch (err) {
-      if (generation !== discoveryGenerationRef.current) return;
+      if (generation !== discoveryGenerationRef.current || controller.signal.aborted) return;
       setDiscoveryError(err instanceof Error ? err.message : "Unable to discover models.");
     } finally {
-      if (generation === discoveryGenerationRef.current) setIsDiscovering(false);
+      if (generation === discoveryGenerationRef.current) {
+        discoveryAbortRef.current = null;
+        setIsDiscovering(false);
+      }
     }
   };
 
@@ -324,25 +378,17 @@ function ByokSettingsPanel() {
     setModel(id);
   };
 
-  const customReady = Boolean(model.trim() && apiType.trim() && customBaseUrl.trim());
+  const customReady = Boolean(model.trim() && apiType.trim() && customBaseUrl.trim() && !runtimeTransportIssue);
 
   const applyCustomEndpoint = () => {
     if (!customReady) return;
-    const config: ByokProviderConfig = {
-      mode: "byok",
+    setProviderConfig({
+      ...draftConfig,
       provider: "custom",
-      apiKey,
       model: model.trim(),
-      useProxy,
-      proxyUrl,
-      thinking,
-      followMode,
       authMethod: "apikey",
-      apiType,
       customBaseUrl: customBaseUrl.trim(),
-      responseStartTimeoutSeconds,
-    };
-    setProviderConfig(config);
+    });
   };
 
   const activeConfig = state.providerConfig;
@@ -498,7 +544,7 @@ function ByokSettingsPanel() {
                   <p className="text-[10px] text-(--chat-text-muted)">
                     {provider === "openai-codex"
                       ? "Complete login in the opened tab. The page will redirect to localhost and fail — copy the full URL from your browser's address bar and paste it below:"
-                      : "Authorize in the opened tab, then paste the code shown on the redirect page:"}
+                      : "Authorize in the opened tab, then paste the code#state shown on the Claude callback page:"}
                   </p>
                   <div className="flex gap-1">
                     <input
@@ -616,7 +662,9 @@ function ByokSettingsPanel() {
             <div>
               <span className="text-xs text-(--chat-text-secondary)">CORS Proxy</span>
               <p className="text-[10px] text-(--chat-text-muted) mt-0.5">
-                Leave custom URL blank on localhost to use the built-in bridge
+                {ambientFetchRuntime
+                  ? "This adapter requires native fetch. Turn proxying off before applying the runtime model."
+                  : "Leave custom URL blank on localhost to use the built-in bridge"}
               </p>
             </div>
             <button
@@ -651,7 +699,7 @@ function ByokSettingsPanel() {
               <p className="text-[10px] text-(--chat-text-muted) mt-1">
                 Not a system/Clash proxy. Leave blank for the local development bridge.
               </p>
-              {isCustom && (
+              {isCustom && !ambientFetchRuntime && (
                 <p className="text-[10px] text-(--chat-text-muted) mt-1">
                   HTTP Custom Endpoints use the local bridge automatically in local development to avoid Excel/WebView
                   mixed-content blocking.
@@ -668,20 +716,24 @@ function ByokSettingsPanel() {
               max={3600}
               step={1}
               value={responseStartTimeoutSeconds}
+              disabled={ambientFetchRuntime}
               onChange={(e) => {
                 const next = Number.parseInt(e.target.value, 10);
                 if (!Number.isFinite(next) || next < 1) return;
                 cancelDiscovery();
                 setResponseStartTimeoutSeconds(Math.min(3600, next));
               }}
-              className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) focus:outline-none focus:border-(--chat-border-active)"
+              className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) focus:outline-none focus:border-(--chat-border-active) disabled:opacity-50 disabled:cursor-not-allowed"
               style={inputStyle}
             />
             <p className="text-[10px] text-(--chat-text-muted) mt-1">
-              Maximum wait for response headers / streaming to start. Default 180 seconds. Once streaming starts, this
-              timeout no longer applies.
+              {ambientFetchRuntime
+                ? "Runtime response-start timeout is unavailable for this adapter because pi-ai requires the exact native fetch implementation."
+                : "Maximum wait for response headers / streaming to start. Default 180 seconds. Once streaming starts, this timeout no longer applies."}
             </p>
           </label>
+
+          {runtimeTransportIssue && <p className="text-xs text-(--chat-error)">{runtimeTransportIssue}</p>}
 
           {!isCustom && (
             <>
@@ -774,7 +826,7 @@ function ByokSettingsPanel() {
         </div>
       </div>
 
-      <div className="border-t border-(--chat-border) pt-4">
+      <div className="border-t border-(--chat-border) pt-4 space-y-3">
         <div className="flex items-center gap-2 text-xs">
           {isConfigured ? (
             <>
@@ -785,16 +837,27 @@ function ByokSettingsPanel() {
             </>
           ) : (
             <span className="text-(--chat-text-muted)">
-              {isCustom
-                ? activeConfig?.mode === "byok" && activeConfig.provider === "custom"
-                  ? "Custom Endpoint changes are pending — click Apply Custom Endpoint; the previously applied endpoint remains active"
-                  : customReady
-                    ? "Custom Endpoint is not active yet — click Apply Custom Endpoint"
-                    : "Enter endpoint and model (API key is optional)"
-                : "Authenticate, connect, and select a model"}
+              {runtimeTransportIssue
+                ? runtimeTransportIssue
+                : isCustom
+                  ? activeConfig?.mode === "byok" && activeConfig.provider === "custom"
+                    ? "Custom Endpoint changes are pending — click Apply Custom Endpoint; the previously applied endpoint remains active"
+                    : customReady
+                      ? "Custom Endpoint is not active yet — click Apply Custom Endpoint"
+                      : "Enter endpoint and model (API key is optional)"
+                  : "Authenticate, connect, and select a model"}
             </span>
           )}
         </div>
+        {(savedByok || activeConfig?.mode === "byok") && (
+          <button
+            type="button"
+            onClick={forgetSavedCredentials}
+            className="text-[10px] text-(--chat-text-muted) hover:text-(--chat-error) transition-colors"
+          >
+            Disconnect and forget saved credentials
+          </button>
+        )}
       </div>
 
       <div className="border-t border-(--chat-border) pt-4">
@@ -803,7 +866,7 @@ function ByokSettingsPanel() {
           OpenExcel uses your existing provider authentication. Models are discovered only after your API key or OAuth
           login is ready.
         </p>
-        {useProxy && (
+        {useProxy && !ambientFetchRuntime && (
           <p className="text-xs text-(--chat-text-muted) leading-relaxed mt-2">
             CORS Proxy: Requests route through your proxy to bypass browser CORS restrictions. Required for OAuth token
             exchange and providers that block browser requests.
@@ -840,6 +903,7 @@ function GatewaySettingsPanel() {
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [discoverySource, setDiscoverySource] = useState<"live" | "fallback" | null>(null);
   const discoveryGenerationRef = useRef(0);
+  const discoveryAbortRef = useRef<AbortController | null>(null);
   const followMode = state.providerConfig?.followMode ?? savedGateway?.followMode ?? true;
 
   useEffect(() => {
@@ -855,8 +919,14 @@ function GatewaySettingsPanel() {
     if (gatewayUrl.trim() && model) setProviderConfig(config);
   }, [gatewayUrl, model, models, followMode, responseStartTimeoutSeconds, setProviderConfig]);
 
+  useEffect(() => {
+    return () => discoveryAbortRef.current?.abort();
+  }, []);
+
   const cancelDiscovery = () => {
     discoveryGenerationRef.current += 1;
+    discoveryAbortRef.current?.abort();
+    discoveryAbortRef.current = null;
     setIsDiscovering(false);
   };
 
@@ -871,21 +941,27 @@ function GatewaySettingsPanel() {
   };
 
   const handleDiscoverModels = async () => {
+    cancelDiscovery();
     const generation = discoveryGenerationRef.current + 1;
     discoveryGenerationRef.current = generation;
+    const controller = new AbortController();
+    discoveryAbortRef.current = controller;
     setIsDiscovering(true);
     setDiscoveryError(null);
     try {
-      const result = await discoverGatewayModels(gatewayUrl, responseStartTimeoutSeconds);
-      if (generation !== discoveryGenerationRef.current) return;
+      const result = await discoverGatewayModels(gatewayUrl, responseStartTimeoutSeconds, { signal: controller.signal });
+      if (generation !== discoveryGenerationRef.current || controller.signal.aborted) return;
       setModels(result.models);
       setDiscoverySource(result.source);
       if (!result.models.some((item) => item.id === model)) setModel(result.models[0]?.id ?? "");
     } catch (err) {
-      if (generation !== discoveryGenerationRef.current) return;
+      if (generation !== discoveryGenerationRef.current || controller.signal.aborted) return;
       setDiscoveryError(err instanceof Error ? err.message : "Unable to discover models.");
     } finally {
-      if (generation === discoveryGenerationRef.current) setIsDiscovering(false);
+      if (generation === discoveryGenerationRef.current) {
+        discoveryAbortRef.current = null;
+        setIsDiscovering(false);
+      }
     }
   };
 
