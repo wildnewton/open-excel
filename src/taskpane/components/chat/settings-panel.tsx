@@ -683,7 +683,6 @@ function ByokSettingsPanel() {
                 const next = Number.parseInt(e.target.value, 10);
                 if (!Number.isFinite(next) || next < 1) return;
                 cancelDiscovery();
-                if (isCustom) clearProviderConfig();
                 setResponseStartTimeoutSeconds(Math.min(3600, next));
               }}
               className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) focus:outline-none focus:border-(--chat-border-active)"
