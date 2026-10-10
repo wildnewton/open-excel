@@ -1,5 +1,5 @@
 import { getModel, getModels, type Model } from "@earendil-works/pi-ai/compat";
-import { buildCorsProxyUrl } from "../../../lib/cors-proxy";
+import { buildCorsProxyUrl, createCorsProxyFetch } from "../../../lib/cors-proxy";
 import { loadOAuthCredentials, refreshOAuthToken } from "../../../lib/oauth";
 import { DEFAULT_RESPONSE_START_TIMEOUT_SECONDS, fetchWithResponseStartTimeout } from "../../../lib/request-timeout";
 import type { ByokProviderConfig, GatewayProviderConfig, ProviderConfig } from "./config";
@@ -270,12 +270,15 @@ async function fetchJson(
   headers: Record<string, string>,
   responseStartTimeoutSeconds: number = DEFAULT_RESPONSE_START_TIMEOUT_SECONDS,
   signal?: AbortSignal,
+  fetchImpl?: typeof globalThis.fetch,
 ): Promise<unknown> {
-  const response = await fetchWithResponseStartTimeout(
-    url,
-    { method: "GET", headers, signal },
-    responseStartTimeoutSeconds,
-  );
+  const response = fetchImpl
+    ? await fetchImpl(url, { method: "GET", headers, signal })
+    : await fetchWithResponseStartTimeout(
+        url,
+        { method: "GET", headers, signal },
+        responseStartTimeoutSeconds,
+      );
   if (!response.ok) {
     let detail = "";
     try {
@@ -425,11 +428,20 @@ export async function discoverGatewayModels(
   const baseUrl = normalizeGatewayBaseUrl(gatewayUrl);
   if (!baseUrl) throw new Error("Enter a Gateway URL first.");
 
+  const gatewayFetch = createCorsProxyFetch(
+    {
+      useProxy: false,
+      proxyUrl: "",
+      responseStartTimeoutSeconds,
+    },
+    { gatewayEndpoint: true, omitAuthentication: true },
+  );
   const payload = await fetchJson(
     `${baseUrl}/models`,
     { Accept: "application/json" },
     responseStartTimeoutSeconds,
     options.signal,
+    gatewayFetch,
   );
   const models = parseOpenAICompatibleModels(payload, false);
   if (models.length === 0) throw new Error("The Gateway returned no models.");
