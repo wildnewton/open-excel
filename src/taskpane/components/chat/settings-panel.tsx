@@ -1019,7 +1019,8 @@ function GatewaySettingsPanel() {
             />
             <p className="text-[10px] text-(--chat-text-muted) mt-1">
               OpenAI-compatible HTTP or HTTPS endpoint. If /v1 is omitted, OpenExcel adds it automatically. The gateway
-              must permit CORS from the add-in origin; HTTP can still be blocked by the Office WebView's mixed-content policy.
+              must permit CORS from the add-in origin; HTTP can still be blocked by the Office WebView's mixed-content
+              policy.
             </p>
           </label>
 
