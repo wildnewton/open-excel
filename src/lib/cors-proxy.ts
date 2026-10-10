@@ -13,6 +13,7 @@ export interface CorsProxyFetchBehavior {
 }
 
 export const LOCAL_CORS_BRIDGE_PATH = "/__openexcel_bridge";
+export const LOCAL_BRIDGE_RESPONSE_START_GRACE_SECONDS = 10;
 const CUSTOM_ENDPOINT_HEADER = "X-OpenExcel-Custom-Endpoint";
 const NO_AUTH_API_KEY = "openexcel-custom-no-auth";
 
@@ -36,6 +37,19 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function requiresAmbientFetch(options: CorsProxyOptions): boolean {
+  // pi-ai's Google Generative AI and Google Vertex adapters explicitly reject a
+  // custom fetch function. The BYOK config reaches this helper structurally, so
+  // use its provider/API hints when present and return the exact ambient fetch.
+  const details = options as CorsProxyOptions & { provider?: string; apiType?: string };
+  return (
+    details.provider === "google" ||
+    details.provider === "google-vertex" ||
+    details.apiType === "google-generative-ai" ||
+    details.apiType === "google-vertex"
+  );
 }
 
 function resolveProxyRoute(
@@ -87,6 +101,8 @@ export function createCorsProxyFetch(
   options: CorsProxyOptions,
   behavior: CorsProxyFetchBehavior = {},
 ): typeof globalThis.fetch {
+  if (requiresAmbientFetch(options)) return globalThis.fetch;
+
   const proxyFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const trace = createDebugTrace();
     const request = new Request(input, init);
@@ -137,6 +153,13 @@ export function createCorsProxyFetch(
 
     try {
       debugTrace(trace, "client.fetch-start");
+      // The bridge owns the configured upstream-header deadline. Give its 504 a
+      // small window to reach the WebView instead of racing an identical client
+      // timer. Direct/external-proxy requests keep the configured deadline.
+      const clientTimeoutSeconds = route.builtInBridge
+        ? normalizeResponseStartTimeoutSeconds(options.responseStartTimeoutSeconds) +
+          LOCAL_BRIDGE_RESPONSE_START_GRACE_SECONDS
+        : options.responseStartTimeoutSeconds;
       const response = await fetchWithResponseStartTimeout(
         route.url,
         {
@@ -152,7 +175,7 @@ export function createCorsProxyFetch(
           referrerPolicy: request.referrerPolicy,
           signal: request.signal,
         },
-        options.responseStartTimeoutSeconds,
+        clientTimeoutSeconds,
       );
       debugTrace(trace, "client.response-headers", {
         status: response.status,
