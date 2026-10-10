@@ -1,0 +1,67 @@
+name: Apply timeout draft fix
+
+on:
+  push:
+    branches:
+      - feature/live-models-gateway-mode
+    paths:
+      - .github/workflows/apply-timeout-draft-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/live-models-gateway-mode
+          fetch-depth: 0
+
+      - name: Patch timeout draft behavior and regression guard
+        shell: python
+        run: |
+          from pathlib import Path
+
+          settings_path = Path("src/taskpane/components/chat/settings-panel.tsx")
+          settings = settings_path.read_text()
+          old = '''                cancelDiscovery();
+                if (isCustom) clearProviderConfig();
+                setResponseStartTimeoutSeconds(Math.min(3600, next));'''
+          new = '''                cancelDiscovery();
+                setResponseStartTimeoutSeconds(Math.min(3600, next));'''
+          if old not in settings:
+              raise SystemExit("Expected Custom Endpoint timeout handler not found")
+          settings = settings.replace(old, new, 1)
+          settings_path.write_text(settings)
+
+          test_path = Path("scripts/test-review-regressions.js")
+          tests = test_path.read_text()
+          anchor = '''assert.equal(clearProvider.includes("isStreamingRef.current = false"), false, "Invalidating config must not fake Agent idle");
+'''
+          addition = '''assert.equal(clearProvider.includes("isStreamingRef.current = false"), false, "Invalidating config must not fake Agent idle");
+assert.equal(
+  settings.includes(
+    'cancelDiscovery();\\n                if (isCustom) clearProviderConfig();\\n                setResponseStartTimeoutSeconds',
+  ),
+  false,
+  "Editing Custom Endpoint response-start timeout must not abort the active request",
+);
+'''
+          if anchor not in tests:
+              raise SystemExit("Expected regression-test anchor not found")
+          tests = tests.replace(anchor, addition, 1)
+          test_path.write_text(tests)
+
+      - name: Run targeted regression checks
+        run: node scripts/test-review-regressions.js
+
+      - name: Remove one-time workflow and commit fix
+        run: |
+          git rm .github/workflows/apply-timeout-draft-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/taskpane/components/chat/settings-panel.tsx scripts/test-review-regressions.js
+          git commit -m "Fix Custom Endpoint timeout draft abort"
+          git push origin HEAD:feature/live-models-gateway-mode
