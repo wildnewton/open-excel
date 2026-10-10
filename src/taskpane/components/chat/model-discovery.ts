@@ -274,11 +274,7 @@ async function fetchJson(
 ): Promise<unknown> {
   const response = fetchImpl
     ? await fetchImpl(url, { method: "GET", headers, signal })
-    : await fetchWithResponseStartTimeout(
-        url,
-        { method: "GET", headers, signal },
-        responseStartTimeoutSeconds,
-      );
+    : await fetchWithResponseStartTimeout(url, { method: "GET", headers, signal }, responseStartTimeoutSeconds);
   if (!response.ok) {
     let detail = "";
     try {
