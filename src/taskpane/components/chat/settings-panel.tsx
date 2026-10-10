@@ -152,7 +152,22 @@ function ByokSettingsPanel() {
 
   useEffect(() => {
     if (provider === "custom") return;
-    if (provider && apiKey && model && !runtimeTransportIssue) setProviderConfig(draftConfig);
+    const config: ByokProviderConfig = {
+      mode: "byok",
+      provider,
+      apiKey,
+      model,
+      useProxy,
+      proxyUrl,
+      thinking,
+      followMode,
+      authMethod,
+      apiType,
+      customBaseUrl,
+      responseStartTimeoutSeconds,
+      ...metadataForModel(models, model),
+    };
+    if (provider && apiKey && model && !runtimeTransportIssue) setProviderConfig(config);
   }, [
     provider,
     apiKey,
@@ -200,8 +215,13 @@ function ByokSettingsPanel() {
     setManualModel("");
   };
 
+  const forgetPersistedConfigBeforeSessionRestore = () => {
+    if (!state.currentSession) clearSavedConfig("byok");
+  };
+
   const handleProviderChange = (newProvider: string) => {
     cancelOAuthExchange();
+    forgetPersistedConfigBeforeSessionRestore();
     clearProviderConfig();
     setProvider(newProvider);
     setApiKey("");
@@ -236,6 +256,7 @@ function ByokSettingsPanel() {
 
   const handleAuthMethodChange = (newMethod: "apikey" | "oauth") => {
     cancelOAuthExchange();
+    forgetPersistedConfigBeforeSessionRestore();
     clearProviderConfig();
     invalidateDiscovery();
     setApiKey("");
@@ -334,7 +355,10 @@ function ByokSettingsPanel() {
   };
 
   const handleApiKeyChange = (newApiKey: string) => {
-    if (!isCustom) clearProviderConfig();
+    if (!isCustom) {
+      forgetPersistedConfigBeforeSessionRestore();
+      clearProviderConfig();
+    }
     setApiKey(newApiKey);
     if (!isCustom) invalidateDiscovery();
   };
@@ -949,7 +973,9 @@ function GatewaySettingsPanel() {
     setIsDiscovering(true);
     setDiscoveryError(null);
     try {
-      const result = await discoverGatewayModels(gatewayUrl, responseStartTimeoutSeconds, { signal: controller.signal });
+      const result = await discoverGatewayModels(gatewayUrl, responseStartTimeoutSeconds, {
+        signal: controller.signal,
+      });
       if (generation !== discoveryGenerationRef.current || controller.signal.aborted) return;
       setModels(result.models);
       setDiscoverySource(result.source);
