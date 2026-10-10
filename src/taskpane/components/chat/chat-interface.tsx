@@ -68,7 +68,7 @@ function StatsBar() {
         )}
       </div>
       <div className="flex items-center gap-1">
-        <span>{providerConfig.provider}</span>
+        {providerConfig.mode === "byok" && <span>{providerConfig.provider}</span>}
         <span className="text-(--chat-text-secondary)">{providerConfig.model}</span>
         {providerConfig.thinking !== "none" && (
           <span className="text-(--chat-accent)">• {providerConfig.thinking}</span>

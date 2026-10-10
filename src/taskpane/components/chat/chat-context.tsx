@@ -3,20 +3,20 @@ import {
   type AgentEvent,
   type AgentMessage,
   type ThinkingLevel as AgentThinkingLevel,
-} from "@mariozechner/pi-agent-core";
+} from "@earendil-works/pi-agent-core";
 import {
   type AssistantMessage,
-  getModel,
-  getModels,
   getProviders,
   type Model,
   streamSimple,
   type Usage,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 import type { ReactNode } from "react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createCorsProxyFetch } from "../../../lib/cors-proxy";
 import type { DirtyRange } from "../../../lib/dirty-tracker";
 import { getWorkbookMetadata, navigateTo } from "../../../lib/excel/api";
+import { loadOAuthCredentials, refreshOAuthToken } from "../../../lib/oauth";
 import {
   type ChatSession,
   createSession,
@@ -28,6 +28,8 @@ import {
   saveSession,
 } from "../../../lib/storage";
 import { EXCEL_TOOLS } from "../../../lib/tools";
+import { isConfigReady, loadSavedConfig, type ProviderConfig, saveConfig, type ThinkingLevel } from "./config";
+import { apiKeyForConfig, resolveConfiguredModel } from "./model-discovery";
 
 export type ToolCallStatus = "pending" | "running" | "complete" | "error";
 
@@ -50,18 +52,6 @@ export interface ChatMessage {
   timestamp: number;
 }
 
-export type ThinkingLevel = "none" | "low" | "medium" | "high";
-
-export interface ProviderConfig {
-  provider: string;
-  apiKey: string;
-  model: string;
-  useProxy: boolean;
-  proxyUrl: string;
-  thinking: ThinkingLevel;
-  followMode: boolean;
-}
-
 export interface SessionStats {
   inputTokens: number;
   outputTokens: number;
@@ -70,25 +60,6 @@ export interface SessionStats {
   totalCost: number;
   contextWindow: number;
   lastUsage: Usage | null;
-}
-
-const STORAGE_KEY = "openexcel-provider-config";
-
-function loadSavedConfig(): ProviderConfig | null {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const config = JSON.parse(saved);
-      if (config.proxyUrl === undefined) {
-        config.proxyUrl = "";
-      }
-      if (config.followMode === undefined) {
-        config.followMode = true; // Default to on
-      }
-      return config;
-    }
-  } catch {}
-  return null;
 }
 
 function parseDirtyRanges(result: string | undefined): DirtyRange[] | null {
@@ -102,14 +73,6 @@ function parseDirtyRanges(result: string | undefined): DirtyRange[] | null {
     // Not valid JSON or no dirty ranges
   }
   return null;
-}
-
-function applyProxyToModel(model: Model<any>, config: ProviderConfig): Model<any> {
-  if (!config.useProxy || !config.proxyUrl || !model.baseUrl) return model;
-  return {
-    ...model,
-    baseUrl: `${config.proxyUrl}/?url=${encodeURIComponent(model.baseUrl)}`,
-  };
 }
 
 interface ChatState {
@@ -137,10 +100,10 @@ interface ChatContextValue {
   state: ChatState;
   sendMessage: (content: string) => Promise<void>;
   setProviderConfig: (config: ProviderConfig) => void;
+  clearProviderConfig: () => void;
   clearMessages: () => void;
   abort: () => void;
   availableProviders: string[];
-  getModelsForProvider: (provider: string) => Model<any>[];
   newSession: () => Promise<void>;
   switchSession: (sessionId: string) => Promise<void>;
   deleteCurrentSession: () => Promise<void>;
@@ -214,20 +177,18 @@ function extractPartsFromAssistantMessage(message: AgentMessage, existingParts: 
 }
 
 export function ChatProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<ChatState>(() => {
-    const saved = loadSavedConfig();
-    const validConfig = saved?.provider && saved?.apiKey && saved?.model ? saved : null;
-    return {
-      messages: [],
-      isStreaming: false,
-      error: null,
-      providerConfig: validConfig,
-      sessionStats: INITIAL_STATS,
-      currentSession: null,
-      sessions: [],
-      sheetNames: {},
-    };
-  });
+  const [state, setState] = useState<ChatState>(() => ({
+    messages: [],
+    isStreaming: false,
+    error: null,
+    // Do not enable input from synchronous localStorage before the matching
+    // IndexedDB session/native Agent transcript has been restored.
+    providerConfig: null,
+    sessionStats: INITIAL_STATS,
+    currentSession: null,
+    sessions: [],
+    sheetNames: {},
+  }));
 
   const agentRef = useRef<Agent | null>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
@@ -235,21 +196,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const pendingConfigRef = useRef<ProviderConfig | null>(null);
   const workbookIdRef = useRef<string | null>(null);
   const sessionLoadedRef = useRef(false);
+  const sessionReadyRef = useRef(false);
   const currentSessionIdRef = useRef<string | null>(null);
-  const followModeRef = useRef(state.providerConfig?.followMode ?? true);
+  const followModeRef = useRef(true);
+  const restoredAgentMessagesRef = useRef<AgentMessage[]>([]);
+  const suppressNextSessionSaveRef = useRef(false);
 
   const availableProviders = getProviders();
 
-  const getModelsForProvider = useCallback((provider: string): Model<any>[] => {
-    try {
-      return getModels(provider as any);
-    } catch {
-      return [];
-    }
-  }, []);
-
   const handleAgentEvent = useCallback((event: AgentEvent) => {
-    console.log("[Chat] Agent event:", event.type, event);
     switch (event.type) {
       case "message_start": {
         if (event.message.role === "assistant") {
@@ -270,10 +225,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         break;
       }
       case "message_update": {
-        if (event.message.role === "assistant" && streamingMessageIdRef.current) {
+        const messageId = streamingMessageIdRef.current;
+        if (event.message.role === "assistant" && messageId) {
           setState((prev) => {
             const messages = [...prev.messages];
-            const idx = messages.findIndex((m) => m.id === streamingMessageIdRef.current);
+            const idx = messages.findIndex((m) => m.id === messageId);
             if (idx !== -1) {
               const parts = extractPartsFromAssistantMessage(event.message, messages[idx].parts);
               messages[idx] = { ...messages[idx], parts };
@@ -285,20 +241,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       case "message_end": {
         if (event.message.role === "assistant") {
+          const messageId = streamingMessageIdRef.current;
           const assistantMsg = event.message as AssistantMessage;
           const isError = assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted";
-          console.log("[Chat] Assistant message result:", event.message);
-          console.log("[Chat] Usage:", assistantMsg.usage);
-          console.log("[Chat] stopReason:", assistantMsg.stopReason, "errorMessage:", assistantMsg.errorMessage);
-
+          if (isError && agentRef.current) {
+            const agentMessages = agentRef.current.state.messages;
+            if (agentMessages[agentMessages.length - 1] === event.message) {
+              agentRef.current.state.messages = agentMessages.slice(0, -1);
+            }
+          }
           setState((prev) => {
             const messages = [...prev.messages];
-            const idx = messages.findIndex((m) => m.id === streamingMessageIdRef.current);
+            const idx = messageId ? messages.findIndex((m) => m.id === messageId) : -1;
 
             if (isError) {
-              if (idx !== -1) {
-                messages.splice(idx, 1);
-              }
+              if (idx !== -1) messages.splice(idx, 1);
             } else if (idx !== -1) {
               const parts = extractPartsFromAssistantMessage(event.message, messages[idx].parts);
               messages[idx] = { ...messages[idx], parts };
@@ -398,7 +355,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 console.error("[FollowMode] Navigation failed:", err);
               });
             } else if (first.sheetId >= 0) {
-              // For whole-sheet changes, just activate the sheet
               navigateTo(first.sheetId).catch((err) => {
                 console.error("[FollowMode] Navigation failed:", err);
               });
@@ -427,6 +383,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       case "agent_end": {
         isStreamingRef.current = false;
+        if (agentRef.current) {
+          restoredAgentMessagesRef.current = [...agentRef.current.state.messages];
+        }
         setState((prev) => ({ ...prev, isStreaming: false }));
         streamingMessageIdRef.current = null;
         break;
@@ -434,19 +393,43 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const configRef = useRef<ProviderConfig | null>(null);
+
+  const getActiveApiKey = useCallback(async (config: ProviderConfig, signal?: AbortSignal): Promise<string> => {
+    if (config.mode !== "byok" || config.authMethod !== "oauth") {
+      return apiKeyForConfig(config);
+    }
+
+    const creds = loadOAuthCredentials(config.provider);
+    if (!creds) {
+      throw new Error("OAuth session is no longer available. Please sign in again.");
+    }
+    if (Date.now() < creds.expires) return creds.access;
+
+    const refreshed = await refreshOAuthToken(config.provider, creds.refresh, config.proxyUrl, config.useProxy, {
+      responseStartTimeoutSeconds: config.responseStartTimeoutSeconds,
+      signal,
+    });
+    return refreshed.access;
+  }, []);
+
   const applyConfig = useCallback(
     (config: ProviderConfig) => {
       let contextWindow = 0;
       let baseModel: Model<any>;
       try {
-        baseModel = getModel(config.provider as any, config.model as any);
+        baseModel = resolveConfiguredModel(config);
         contextWindow = baseModel.contextWindow;
-      } catch {
+      } catch (err) {
+        setState((prev) => ({
+          ...prev,
+          error: err instanceof Error ? err.message : "Unable to configure the selected model",
+        }));
         return;
       }
 
-      const proxiedModel = applyProxyToModel(baseModel, config);
-      const existingMessages = agentRef.current?.state.messages ?? [];
+      configRef.current = config;
+      const existingMessages = agentRef.current?.state.messages ?? restoredAgentMessagesRef.current;
 
       if (agentRef.current) {
         agentRef.current.abort();
@@ -454,17 +437,51 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       const agent = new Agent({
         initialState: {
-          model: proxiedModel,
+          model: baseModel,
           systemPrompt: SYSTEM_PROMPT,
           thinkingLevel: thinkingLevelToAgent(config.thinking),
           tools: EXCEL_TOOLS,
           messages: existingMessages,
         },
-        streamFn: (model, context, options) => {
-          return streamSimple(model, context, {
+        streamFn: async (model, context, options) => {
+          const cfg = configRef.current ?? config;
+          const isCustomEndpoint = cfg.mode === "byok" && cfg.provider === "custom";
+          const customWithoutAuth = isCustomEndpoint && !cfg.apiKey.trim();
+          const omitAuthentication = cfg.mode === "gateway" || customWithoutAuth;
+          let apiKey = await getActiveApiKey(cfg, options?.signal);
+
+          if (customWithoutAuth) {
+            apiKey = "openexcel-custom-no-auth";
+          }
+
+          const proxyOptions =
+            cfg.mode === "byok"
+              ? cfg
+              : {
+                  useProxy: false,
+                  proxyUrl: "",
+                  responseStartTimeoutSeconds: cfg.responseStartTimeoutSeconds,
+                };
+
+          const streamOptions: Record<string, unknown> = {
             ...options,
-            apiKey: config.apiKey,
-          });
+            apiKey,
+            fetch: createCorsProxyFetch(proxyOptions, {
+              customEndpoint: isCustomEndpoint,
+              omitAuthentication,
+            }),
+          };
+
+          if (omitAuthentication) {
+            streamOptions.headers = {
+              ...((options as { headers?: Record<string, string | null> }).headers ?? {}),
+              authorization: null,
+              "api-key": null,
+              "x-api-key": null,
+            };
+          }
+
+          return streamSimple(model, context, streamOptions as any);
         },
       });
       agentRef.current = agent;
@@ -472,14 +489,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       pendingConfigRef.current = null;
 
       followModeRef.current = config.followMode ?? true;
-
-      console.log("[Chat] Model info:", {
-        id: baseModel.id,
-        contextWindow: baseModel.contextWindow,
-        maxTokens: baseModel.maxTokens,
-        cost: baseModel.cost,
-        reasoning: baseModel.reasoning,
-      });
+      restoredAgentMessagesRef.current = [...existingMessages];
+      saveConfig(config);
 
       setState((prev) => ({
         ...prev,
@@ -488,11 +499,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         sessionStats: { ...prev.sessionStats, contextWindow },
       }));
     },
-    [handleAgentEvent],
+    [handleAgentEvent, getActiveApiKey],
   );
 
   const setProviderConfig = useCallback(
     (config: ProviderConfig) => {
+      if (!sessionReadyRef.current) {
+        // Settings can mount before IndexedDB finishes. Hold the newest requested
+        // config, but do not expose it in state or create an Agent yet.
+        pendingConfigRef.current = config;
+        return;
+      }
       if (isStreamingRef.current) {
         pendingConfigRef.current = config;
         setState((prev) => ({ ...prev, providerConfig: config }));
@@ -503,10 +520,38 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [applyConfig],
   );
 
+  const clearProviderConfig = useCallback(() => {
+    if (agentRef.current) {
+      restoredAgentMessagesRef.current = [...agentRef.current.state.messages];
+    }
+    configRef.current = null;
+    pendingConfigRef.current = null;
+    setState((prev) => ({
+      ...prev,
+      providerConfig: null,
+      error: null,
+      sessionStats: { ...prev.sessionStats, contextWindow: 0 },
+    }));
+  }, []);
+
   const abort = useCallback(() => {
     agentRef.current?.abort();
-    isStreamingRef.current = false;
-    setState((prev) => ({ ...prev, isStreaming: false }));
+  }, []);
+
+  const restoreSessionAgentMessages = useCallback((messages: AgentMessage[]) => {
+    const agent = agentRef.current;
+    if (messages.length > 0) {
+      restoredAgentMessagesRef.current = [...messages];
+      if (agent) agent.state.messages = restoredAgentMessagesRef.current;
+      return;
+    }
+
+    if (agent) {
+      agent.reset();
+      restoredAgentMessagesRef.current = [...agent.state.messages];
+    } else {
+      restoredAgentMessagesRef.current = [];
+    }
   }, []);
 
   const sendMessage = useCallback(
@@ -516,7 +561,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       const agent = agentRef.current;
       if (!agent || !state.providerConfig) {
-        setState((prev) => ({ ...prev, error: "Please configure your API key first" }));
+        setState((prev) => ({ ...prev, error: "Please configure a model first" }));
         return;
       }
 
@@ -538,9 +583,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       try {
         let promptContent = content;
         try {
-          console.log("[Chat] Fetching workbook metadata...");
           const metadata = await getWorkbookMetadata();
-          console.log("[Chat] Workbook metadata:", metadata);
           promptContent = `<wb_context>\n${JSON.stringify(metadata, null, 2)}\n</wb_context>\n\n${content}`;
 
           if (metadata.sheetsMetadata) {
@@ -554,7 +597,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           console.error("[Chat] Failed to get workbook metadata:", err);
         }
         await agent.prompt(promptContent);
-        console.log("[Chat] Full context:", agent.state.messages);
       } catch (err) {
         console.error("[Chat] sendMessage error:", err);
         isStreamingRef.current = false;
@@ -569,38 +611,60 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
 
   const clearMessages = useCallback(() => {
-    abort();
-    agentRef.current?.reset();
-    if (currentSessionIdRef.current) {
-      saveSession(currentSessionIdRef.current, []).catch(console.error);
-    }
-    setState((prev) => ({ ...prev, messages: [], error: null, sessionStats: INITIAL_STATS }));
-  }, [abort]);
+    const clear = async () => {
+      const agent = agentRef.current;
+      if (agent && isStreamingRef.current) {
+        // agent_end normally triggers the session autosave effect. Clear performs
+        // its own authoritative empty-session save below, so suppress that one
+        // transition to prevent a stale pre-clear save from racing with it.
+        suppressNextSessionSaveRef.current = true;
+        agent.abort();
+        await agent.waitForIdle();
+      }
+
+      if (agentRef.current) {
+        agentRef.current.reset();
+        restoredAgentMessagesRef.current = [...agentRef.current.state.messages];
+      } else {
+        restoredAgentMessagesRef.current = [];
+      }
+
+      isStreamingRef.current = false;
+      if (currentSessionIdRef.current) {
+        await saveSession(currentSessionIdRef.current, [], restoredAgentMessagesRef.current);
+      }
+      setState((prev) => ({
+        ...prev,
+        messages: [],
+        isStreaming: false,
+        error: null,
+        sessionStats: INITIAL_STATS,
+      }));
+    };
+
+    void clear().catch((err) => {
+      console.error("[Chat] Failed to clear messages:", err);
+    });
+  }, []);
 
   const refreshSessions = useCallback(async () => {
     if (!workbookIdRef.current) return;
     const sessions = await listSessions(workbookIdRef.current);
-    console.log(
-      "[Chat] refreshSessions:",
-      sessions.map((s) => ({ id: s.id, name: s.name, msgs: s.messages.length })),
-    );
     setState((prev) => ({ ...prev, sessions }));
   }, []);
 
   const newSession = useCallback(async () => {
-    console.log("[Chat] newSession called, workbookId:", workbookIdRef.current);
     if (!workbookIdRef.current) {
       console.error("[Chat] Cannot create session: workbookId not set");
       return;
     }
     if (isStreamingRef.current) {
-      console.log("[Chat] newSession blocked: streaming in progress");
       return;
     }
     try {
-      agentRef.current?.reset();
       const session = await createSession(workbookIdRef.current);
-      console.log("[Chat] Created new session:", session.id);
+      agentRef.current?.reset();
+      restoredAgentMessagesRef.current = agentRef.current ? [...agentRef.current.state.messages] : [];
       currentSessionIdRef.current = session.id;
       await refreshSessions();
       setState((prev) => ({
@@ -615,44 +679,43 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, [refreshSessions]);
 
-  const switchSession = useCallback(async (sessionId: string) => {
-    console.log("[Chat] switchSession called:", sessionId, "current:", currentSessionIdRef.current);
-    if (currentSessionIdRef.current === sessionId) return;
-    if (isStreamingRef.current) {
-      console.log("[Chat] switchSession blocked: streaming in progress");
-      return;
-    }
-    agentRef.current?.reset();
-    try {
-      const session = await getSession(sessionId);
-      console.log("[Chat] Got session:", session?.id, "messages:", session?.messages.length);
-      if (!session) {
-        console.error("[Chat] Session not found:", sessionId);
+  const switchSession = useCallback(
+    async (sessionId: string) => {
+      if (currentSessionIdRef.current === sessionId) return;
+      if (isStreamingRef.current) {
         return;
       }
-      currentSessionIdRef.current = session.id;
-      setState((prev) => ({
-        ...prev,
-        messages: session.messages,
-        currentSession: session,
-        error: null,
-        sessionStats: INITIAL_STATS,
-      }));
-    } catch (err) {
-      console.error("[Chat] Failed to switch session:", err);
-    }
-  }, []);
+      try {
+        const session = await getSession(sessionId);
+        if (!session) {
+          console.error("[Chat] Session not found:", sessionId);
+          return;
+        }
+        currentSessionIdRef.current = session.id;
+        restoreSessionAgentMessages(session.agentMessages);
+        setState((prev) => ({
+          ...prev,
+          messages: session.messages,
+          currentSession: session,
+          error: null,
+          sessionStats: INITIAL_STATS,
+        }));
+      } catch (err) {
+        console.error("[Chat] Failed to switch session:", err);
+      }
+    },
+    [restoreSessionAgentMessages],
+  );
 
   const deleteCurrentSession = useCallback(async () => {
     if (!currentSessionIdRef.current || !workbookIdRef.current) return;
     if (isStreamingRef.current) {
-      console.log("[Chat] deleteCurrentSession blocked: streaming in progress");
       return;
     }
-    agentRef.current?.reset();
     await deleteSession(currentSessionIdRef.current);
     const session = await getOrCreateCurrentSession(workbookIdRef.current);
     currentSessionIdRef.current = session.id;
+    restoreSessionAgentMessages(session.agentMessages);
     await refreshSessions();
     setState((prev) => ({
       ...prev,
@@ -661,21 +724,29 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       error: null,
       sessionStats: INITIAL_STATS,
     }));
-  }, [refreshSessions]);
+  }, [refreshSessions, restoreSessionAgentMessages]);
 
   const prevStreamingRef = useRef(false);
   useEffect(() => {
     if (prevStreamingRef.current && !state.isStreaming && currentSessionIdRef.current) {
-      const sessionId = currentSessionIdRef.current;
-      saveSession(sessionId, state.messages)
-        .then(async () => {
-          await refreshSessions();
-          const updated = await getSession(sessionId);
-          if (updated) {
-            setState((prev) => ({ ...prev, currentSession: updated }));
-          }
-        })
-        .catch(console.error);
+      if (suppressNextSessionSaveRef.current) {
+        suppressNextSessionSaveRef.current = false;
+      } else {
+        const sessionId = currentSessionIdRef.current;
+        const agentMessages = agentRef.current
+          ? [...agentRef.current.state.messages]
+          : restoredAgentMessagesRef.current;
+        restoredAgentMessagesRef.current = agentMessages;
+        saveSession(sessionId, state.messages, agentMessages)
+          .then(async () => {
+            await refreshSessions();
+            const updated = await getSession(sessionId);
+            if (updated) {
+              setState((prev) => ({ ...prev, currentSession: updated }));
+            }
+          })
+          .catch(console.error);
+      }
     }
     prevStreamingRef.current = state.isStreaming;
   }, [state.isStreaming, state.messages, refreshSessions]);
@@ -693,29 +764,31 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     getOrCreateWorkbookId()
       .then(async (id) => {
         workbookIdRef.current = id;
-        console.log("[Chat] Workbook ID:", id);
         const session = await getOrCreateCurrentSession(id);
         currentSessionIdRef.current = session.id;
         const sessions = await listSessions(id);
-        console.log("[Chat] Loaded session:", session.id, "with", session.messages.length, "messages");
+        restoreSessionAgentMessages(session.agentMessages);
         setState((prev) => ({
           ...prev,
           messages: session.messages,
           currentSession: session,
           sessions,
         }));
+
+        const saved = loadSavedConfig();
+        const startupConfig = pendingConfigRef.current ?? (isConfigReady(saved) ? saved : null);
+        sessionReadyRef.current = true;
+        if (startupConfig) {
+          setProviderConfig(startupConfig);
+        }
       })
       .catch((err) => {
+        // Do not enable the runtime after a failed session restore: mixing a blank
+        // Agent transcript with persisted display history is worse than requiring
+        // the user to reopen and retry initialization.
         console.error("[Chat] Failed to load session:", err);
       });
-  }, []);
-
-  useEffect(() => {
-    const saved = loadSavedConfig();
-    if (saved?.provider && saved?.apiKey && saved?.model) {
-      setProviderConfig(saved);
-    }
-  }, [setProviderConfig]);
+  }, [restoreSessionAgentMessages, setProviderConfig]);
 
   const getSheetName = useCallback(
     (sheetId: number): string | undefined => state.sheetNames[sheetId],
@@ -728,7 +801,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const newFollowMode = !prev.providerConfig.followMode;
       followModeRef.current = newFollowMode;
       const newConfig = { ...prev.providerConfig, followMode: newFollowMode };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(newConfig));
+      if (pendingConfigRef.current) {
+        pendingConfigRef.current = { ...pendingConfigRef.current, followMode: newFollowMode };
+      }
+      if (configRef.current) {
+        configRef.current = { ...configRef.current, followMode: newFollowMode };
+        saveConfig(configRef.current);
+      }
       return { ...prev, providerConfig: newConfig };
     });
   }, []);
@@ -739,10 +818,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         state,
         sendMessage,
         setProviderConfig,
+        clearProviderConfig,
         clearMessages,
         abort,
         availableProviders,
-        getModelsForProvider,
         newSession,
         switchSession,
         deleteCurrentSession,

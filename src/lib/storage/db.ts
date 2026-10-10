@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import Dexie, { type Table } from "dexie";
 import type { ChatMessage } from "../../taskpane/components/chat/chat-context";
 
@@ -6,6 +7,7 @@ export interface ChatSession {
   workbookId: string;
   name: string;
   messages: ChatMessage[];
+  agentMessages: AgentMessage[];
   createdAt: number;
   updatedAt: number;
 }
@@ -22,6 +24,14 @@ class OpenExcelDB extends Dexie {
 }
 
 const db = new OpenExcelDB();
+
+function normalizeSession(session: ChatSession | undefined): ChatSession | undefined {
+  if (!session) return undefined;
+  return {
+    ...session,
+    agentMessages: Array.isArray(session.agentMessages) ? session.agentMessages : [],
+  };
+}
 
 export { db };
 
@@ -48,7 +58,8 @@ export async function getOrCreateWorkbookId(): Promise<string> {
 }
 
 export async function listSessions(workbookId: string): Promise<ChatSession[]> {
-  return db.sessions.where("workbookId").equals(workbookId).reverse().sortBy("updatedAt");
+  const sessions = await db.sessions.where("workbookId").equals(workbookId).reverse().sortBy("updatedAt");
+  return sessions.map((session) => normalizeSession(session) as ChatSession);
 }
 
 export async function createSession(workbookId: string, name?: string): Promise<ChatSession> {
@@ -58,6 +69,7 @@ export async function createSession(workbookId: string, name?: string): Promise<
     workbookId,
     name: name ?? "New Chat",
     messages: [],
+    agentMessages: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -66,7 +78,7 @@ export async function createSession(workbookId: string, name?: string): Promise<
 }
 
 export async function getSession(sessionId: string): Promise<ChatSession | undefined> {
-  return db.sessions.get(sessionId);
+  return normalizeSession(await db.sessions.get(sessionId));
 }
 
 function deriveSessionName(messages: ChatMessage[]): string | null {
@@ -78,9 +90,12 @@ function deriveSessionName(messages: ChatMessage[]): string | null {
   return text.length > 40 ? `${text.slice(0, 37)}...` : text;
 }
 
-export async function saveSession(sessionId: string, messages: ChatMessage[]): Promise<void> {
-  console.log("[DB] saveSession:", sessionId, "messages:", messages.length);
-  const session = await db.sessions.get(sessionId);
+export async function saveSession(
+  sessionId: string,
+  messages: ChatMessage[],
+  agentMessages?: AgentMessage[],
+): Promise<void> {
+  const session = normalizeSession(await db.sessions.get(sessionId));
   if (!session) {
     console.error("[DB] Session not found for save:", sessionId);
     return;
@@ -93,10 +108,10 @@ export async function saveSession(sessionId: string, messages: ChatMessage[]): P
   await db.sessions.put({
     ...session,
     messages,
+    agentMessages: agentMessages ?? session.agentMessages,
     name,
     updatedAt: Date.now(),
   });
-  console.log("[DB] saveSession complete");
 }
 
 export async function renameSession(sessionId: string, name: string): Promise<void> {

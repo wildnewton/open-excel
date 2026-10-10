@@ -12,10 +12,14 @@
     "dev_server_port": 3000
   },
   "scripts": {
-    "build": "webpack --mode production",
-    "deploy": "pnpm build && pnpm dlx wrangler pages deploy dist --project-name openexcel",
+    "build": "webpack --mode production --env openexcelMode=byok",
+    "build:byok": "webpack --mode production --env openexcelMode=byok",
+    "build:gateway": "webpack --mode production --env openexcelMode=gateway",
+    "deploy": "pnpm build && pnpm dlx wrangler pages deploy dist-byok --project-name openexcel",
     "build:dev": "webpack --mode development",
     "dev-server": "webpack serve --mode development",
+    "test:bridge": "node scripts/test-local-cors-bridge.js",
+    "test:review-regressions": "node scripts/test-review-regressions.js",
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",
     "format": "biome format --write src/",
@@ -29,8 +33,8 @@
     "watch": "webpack --mode development --watch"
   },
   "dependencies": {
-    "@mariozechner/pi-agent-core": "^0.50.7",
-    "@mariozechner/pi-ai": "^0.50.7",
+    "@earendil-works/pi-agent-core": "^1.1.0",
+    "@earendil-works/pi-ai": "^1.1.0",
     "@sinclair/typebox": "^0.34.48",
     "@streamdown/code": "^1.0.1",
     "core-js": "^3.36.0",
@@ -68,6 +72,7 @@
     "html-loader": "^5.0.0",
     "html-webpack-plugin": "^5.6.0",
     "https-browserify": "^1.0.0",
+    "https-proxy-agent": "^7.0.6",
     "less": "^4.2.0",
     "less-loader": "^12.2.0",
     "node-polyfill-webpack-plugin": "^4.1.0",
@@ -103,5 +108,6 @@
   "browserslist": [
     "last 2 versions",
     "ie 11"
-  ]
+  ],
+  "packageManager": "pnpm@10.15.0+sha512.486ebc259d3e999a4e8691ce03b5cac4a71cbeca39372a9b762cb500cfdf0873e2cb16abe3d951b1ee2cf012503f027b98b6584e4df22524e0c7450d9ec7aa7b"
 }

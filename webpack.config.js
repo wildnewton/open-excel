@@ -5,6 +5,7 @@ const CopyWebpackPlugin = require("copy-webpack-plugin");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 const webpack = require("webpack");
 const path = require("path");
+const { createLocalCorsBridgeMiddleware } = require("./scripts/local-cors-bridge");
 
 const urlDev = "https://localhost:3000/";
 const urlProd = "https://www.contoso.com/"; // CHANGE THIS TO YOUR PRODUCTION DEPLOYMENT LOCATION
@@ -16,8 +17,19 @@ async function getHttpsOptions() {
 
 module.exports = async (env, options) => {
   const dev = options.mode === "development";
+  const openExcelMode = env?.openexcelMode === "gateway" ? "gateway" : "byok";
   const config = {
     devtool: "source-map",
+    // pi-ai uses intentional variable-specifier dynamic imports to keep
+    // Node-only code (env API keys, OAuth loaders, Bedrock stream) out of
+    // browser bundles. Webpack cannot statically analyze these and emits
+    // benign "Critical dependency" warnings — silence them surgically.
+    ignoreWarnings: [
+      {
+        module: /@earendil-works[\\/]pi-ai/,
+        message: /Critical dependency: the request of a dependency is an expression/,
+      },
+    ],
     entry: {
       polyfill: ["core-js/stable", "regenerator-runtime/runtime"],
       react: ["react", "react-dom"],
@@ -28,6 +40,9 @@ module.exports = async (env, options) => {
       commands: "./src/commands/commands.ts",
     },
     output: {
+      // Keep each build mode in its own directory so building one mode
+      // never wipes the other (e.g. build:gateway must not clobber build:byok).
+      path: path.resolve(__dirname, `dist-${openExcelMode}`),
       clean: true,
     },
     resolve: {
@@ -135,17 +150,20 @@ module.exports = async (env, options) => {
             from: "assets/*",
             to: "assets/[name][ext][query]",
           },
-          {
-            from: "manifest*.xml",
-            to: "[name]" + "[ext]",
-            transform(content) {
-              if (dev) {
-                return content;
-              } else {
-                return content.toString().replace(new RegExp(urlDev, "g"), urlProd);
-              }
-            },
-          },
+          ...(dev || openExcelMode === "byok"
+            ? [
+                {
+                  from: "manifest*.xml",
+                  to: "[name]" + "[ext]",
+                  transform(content) {
+                    if (dev) {
+                      return content;
+                    }
+                    return content.toString().replace(new RegExp(urlDev, "g"), urlProd);
+                  },
+                },
+              ]
+            : []),
         ],
       }),
       new HtmlWebpackPlugin({
@@ -162,10 +180,19 @@ module.exports = async (env, options) => {
         "process.versions": "undefined",
         "process.browser": JSON.stringify(true),
         __APP_VERSION__: JSON.stringify(require("./package.json").version),
+        __OPENEXCEL_MODE__: JSON.stringify(openExcelMode),
       }),
     ],
     devServer: {
       hot: true,
+      host: "localhost",
+      setupMiddlewares(middlewares, devServer) {
+        middlewares.unshift({
+          name: "openexcel-local-cors-bridge",
+          middleware: createLocalCorsBridgeMiddleware(),
+        });
+        return middlewares;
+      },
       headers: {
         "Access-Control-Allow-Origin": "*",
       },
