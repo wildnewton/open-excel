@@ -7,6 +7,7 @@ const { HttpsProxyAgent } = require("https-proxy-agent");
 
 const BRIDGE_PATH = "/__openexcel_bridge";
 const CUSTOM_ENDPOINT_HEADER = "x-openexcel-custom-endpoint";
+const GATEWAY_ENDPOINT_HEADER = "x-openexcel-gateway-endpoint";
 const TRACE_HEADER = "x-openexcel-trace-id";
 const DNS_CLASSIFICATION_TIMEOUT_MS = 2000;
 const DEFAULT_UPSTREAM_HEADER_TIMEOUT_MS = 180000;
@@ -29,6 +30,7 @@ const REQUEST_HEADERS_TO_DROP = new Set([
   "referer",
   "cookie",
   CUSTOM_ENDPOINT_HEADER,
+  GATEWAY_ENDPOINT_HEADER,
   TRACE_HEADER,
   "sec-fetch-dest",
   "sec-fetch-mode",
@@ -108,6 +110,10 @@ function isTrustedTaskpaneRequest(request) {
 
 function isTrustedCustomEndpointRequest(request) {
   return request.headers[CUSTOM_ENDPOINT_HEADER] === "1" && isTrustedTaskpaneRequest(request);
+}
+
+function isTrustedGatewayEndpointRequest(request) {
+  return request.headers[GATEWAY_ENDPOINT_HEADER] === "1" && isTrustedTaskpaneRequest(request);
 }
 
 function parseMacSystemProxy() {
@@ -244,14 +250,17 @@ function createLocalCorsBridgeMiddleware() {
       }
 
       const trustedCustomEndpoint = isTrustedCustomEndpointRequest(request);
+      const trustedGatewayEndpoint = isTrustedGatewayEndpointRequest(request);
+      const trustedInternalEndpoint = trustedCustomEndpoint || trustedGatewayEndpoint;
       const normalizedHostname = target.hostname.toLowerCase().replace(/^\[|\]$/g, "");
       const loopback = isLoopbackTarget(normalizedHostname);
 
-      // A trusted plain-HTTP Custom Endpoint is always sent directly. Do not do a
-      // preflight DNS classification first: that extra resolver call is unnecessary
-      // for routing and can leave the browser request pending when local DNS is slow.
+      // A trusted plain-HTTP Custom/Gateway Endpoint is always sent directly. Do
+      // not do a preflight DNS classification first: that extra resolver call is
+      // unnecessary for routing and can leave the browser request pending when
+      // local DNS is slow.
       let privateNetwork = loopback;
-      if (!(trustedCustomEndpoint && target.protocol === "http:") && !loopback) {
+      if (!(trustedInternalEndpoint && target.protocol === "http:") && !loopback) {
         traceLog(traceId, startedAt, "bridge.route-dns-start");
         privateNetwork = await resolvesToPrivateNetwork(target.hostname);
         traceLog(traceId, startedAt, "bridge.route-dns-end", `private=${privateNetwork ? "yes" : "no"}`);
@@ -261,17 +270,17 @@ function createLocalCorsBridgeMiddleware() {
 
       // Generic provider proxying stays locked to public HTTPS (plus historical
       // loopback support). Private/LAN or plain HTTP is permitted only when the
-      // request is explicitly marked as a Custom Endpoint request from this
-      // same-origin taskpane.
-      if (!trustedCustomEndpoint) {
+      // request is explicitly marked as a trusted Custom or Gateway Endpoint
+      // request from this same-origin taskpane.
+      if (!trustedInternalEndpoint) {
         if (target.protocol === "http:" && !loopback) {
           response.statusCode = 403;
-          response.end("Plain HTTP targets are only allowed for trusted Custom Endpoints");
+          response.end("Plain HTTP targets are only allowed for trusted Custom/Gateway Endpoints");
           return;
         }
         if (privateNetwork && !loopback) {
           response.statusCode = 403;
-          response.end("Private-network targets are only allowed for trusted Custom Endpoints");
+          response.end("Private-network targets are only allowed for trusted Custom/Gateway Endpoints");
           return;
         }
       }
@@ -283,16 +292,17 @@ function createLocalCorsBridgeMiddleware() {
         return;
       }
 
-      // Internal/private Custom Endpoints must bypass Clash/system proxy. Plain
-      // HTTP Custom Endpoints are also direct because HttpsProxyAgent is not the
-      // right transport for them. Public HTTPS keeps the existing proxy behavior.
-      const direct = loopback || (trustedCustomEndpoint && (privateNetwork || target.protocol === "http:"));
+      // Internal/private Custom/Gateway Endpoints must bypass Clash/system proxy.
+      // Plain HTTP trusted endpoints are also direct because HttpsProxyAgent is not
+      // the right transport for them. Public HTTPS keeps the existing proxy behavior.
+      const direct = loopback || (trustedInternalEndpoint && (privateNetwork || target.protocol === "http:"));
       const route = direct || !agent ? "direct" : "system-proxy";
       const transport = target.protocol === "http:" ? http : https;
       const requestId = createRequestId();
+      const endpointKind = trustedGatewayEndpoint ? "gateway" : trustedCustomEndpoint ? "custom" : "generic";
 
       console.log(
-        `[OpenExcel bridge:${requestId}] start method=${method} protocol=${target.protocol.slice(0, -1)} custom=${trustedCustomEndpoint ? "yes" : "no"} route=${route} responseStartTimeout=${upstreamHeaderTimeoutMs}ms`,
+        `[OpenExcel bridge:${requestId}] start method=${method} protocol=${target.protocol.slice(0, -1)} endpoint=${endpointKind} route=${route} responseStartTimeout=${upstreamHeaderTimeoutMs}ms`,
       );
       traceLog(traceId, startedAt, "bridge.upstream-request-start", `route=${route}`);
 
@@ -439,4 +449,5 @@ module.exports = {
   isPrivateIpv6,
   isTrustedTaskpaneRequest,
   isTrustedCustomEndpointRequest,
+  isTrustedGatewayEndpointRequest,
 };
