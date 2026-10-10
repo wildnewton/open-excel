@@ -9,12 +9,14 @@ export interface CorsProxyOptions {
 
 export interface CorsProxyFetchBehavior {
   customEndpoint?: boolean;
+  gatewayEndpoint?: boolean;
   omitAuthentication?: boolean;
 }
 
 export const LOCAL_CORS_BRIDGE_PATH = "/__openexcel_bridge";
 export const LOCAL_BRIDGE_RESPONSE_START_GRACE_SECONDS = 10;
 const CUSTOM_ENDPOINT_HEADER = "X-OpenExcel-Custom-Endpoint";
+const GATEWAY_ENDPOINT_HEADER = "X-OpenExcel-Gateway-Endpoint";
 const NO_AUTH_API_KEY = "openexcel-custom-no-auth";
 
 function trimTrailingSlash(value: string): string {
@@ -69,6 +71,18 @@ function resolveProxyRoute(
     if (isLocalDevelopmentHost()) {
       return { url: localBridgeUrl(targetUrl, options.responseStartTimeoutSeconds), builtInBridge: true };
     }
+  }
+
+  // Gateway transport is deterministic: HTTPS stays direct, while HTTP must
+  // never be issued by the HTTPS Office WebView. Route HTTP through the same-
+  // origin OpenExcel bridge instead. The current bridge is hosted by the local
+  // development server, so fail clearly rather than falling back to direct HTTP
+  // when that bridge is unavailable.
+  if (behavior.gatewayEndpoint && isHttpUrl(targetUrl)) {
+    if (!isLocalDevelopmentHost()) {
+      throw new Error("HTTP Gateway URLs require the OpenExcel local bridge. Use the localhost/sideload development host or HTTPS for deployed builds.");
+    }
+    return { url: localBridgeUrl(targetUrl, options.responseStartTimeoutSeconds), builtInBridge: true };
   }
 
   // Excel's taskpane is HTTPS. A direct HTTP Custom Endpoint request is mixed
@@ -126,7 +140,14 @@ export function createCorsProxyFetch(
       }
     }
 
-    const route = resolveProxyRoute(targetUrl, options, behavior);
+    // Runtime Gateway requests already arrive here with authentication omitted.
+    // Treat that existing call shape as Gateway traffic so older call sites cannot
+    // accidentally issue direct HTTP while discovery uses the explicit flag.
+    const routeBehavior: CorsProxyFetchBehavior = {
+      ...behavior,
+      gatewayEndpoint: behavior.gatewayEndpoint || (behavior.omitAuthentication && !behavior.customEndpoint),
+    };
+    const route = resolveProxyRoute(targetUrl, options, routeBehavior);
     const routeKind = route.builtInBridge
       ? "local-bridge"
       : options.useProxy && options.proxyUrl.trim()
@@ -135,6 +156,9 @@ export function createCorsProxyFetch(
 
     if (route.builtInBridge && behavior.customEndpoint) {
       headers.set(CUSTOM_ENDPOINT_HEADER, "1");
+    }
+    if (route.builtInBridge && routeBehavior.gatewayEndpoint) {
+      headers.set(GATEWAY_ENDPOINT_HEADER, "1");
     }
     // The trace ID is sent only to OpenExcel's same-origin local bridge. It is
     // explicitly stripped there and is never forwarded to the configured endpoint.
