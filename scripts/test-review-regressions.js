@@ -77,10 +77,27 @@ assert.match(chat, /waitForIdle\(\)/, "Reset after abort must wait for the Agent
 assert.match(chat, /suppressNextSessionSaveRef/, "Clear must suppress the stale post-abort autosave race");
 assert.match(chat, /restoreSessionAgentMessages/, "Legacy or empty sessions must preserve the Agent system baseline");
 assert.match(chat, /agentMessages\[agentMessages.length - 1\] === event.message/, "Error/aborted UI and Agent histories must stay aligned");
+assert.match(chat, /const sessionReadyRef = useRef\(false\)/, "Startup needs an explicit session-ready gate");
+const setProviderSection = section(chat, "const setProviderConfig", "const clearProviderConfig");
 assert.match(
-  chat,
-  /providerConfig: null[\s\S]*getOrCreateCurrentSession[\s\S]*restoreSessionAgentMessages[\s\S]*setProviderConfig\(saved\)/,
-  "Saved runtime must not enable chat before the matching session transcript is restored",
+  setProviderSection,
+  /if \(!sessionReadyRef\.current\)[\s\S]*pendingConfigRef\.current = config;[\s\S]*return;/,
+  "Settings must not enable the runtime before the session transcript is restored",
+);
+const startupSection = section(chat, "getOrCreateWorkbookId()", "const getSheetName");
+assert.ok(
+  startupSection.indexOf("restoreSessionAgentMessages(session.agentMessages)") <
+    startupSection.indexOf("sessionReadyRef.current = true"),
+  "Native transcript restore must precede opening the runtime gate",
+);
+assert.ok(
+  startupSection.indexOf("sessionReadyRef.current = true") < startupSection.indexOf("setProviderConfig(startupConfig)"),
+  "Saved or Settings-requested config may apply only after the startup gate opens",
+);
+assert.match(
+  startupSection,
+  /const startupConfig = pendingConfigRef\.current \?\? \(isConfigReady\(saved\) \? saved : null\)/,
+  "The newest pre-ready Settings config must win over stale persisted config",
 );
 const newSessionSection = section(chat, "const newSession", "const switchSession");
 assert.ok(
