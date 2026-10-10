@@ -71,11 +71,11 @@ export function normalizeGatewayBaseUrl(value: string): string {
   try {
     parsed = new URL(trimmed);
   } catch {
-    throw new Error("Gateway URL must be a valid absolute HTTPS URL.");
+    throw new Error("Gateway URL must be a valid absolute HTTP or HTTPS URL.");
   }
 
-  if (parsed.protocol !== "https:") {
-    throw new Error("Gateway URL must use HTTPS.");
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Gateway URL must use HTTP or HTTPS.");
   }
   if (parsed.username || parsed.password) {
     throw new Error("Gateway URL must not contain embedded credentials.");
