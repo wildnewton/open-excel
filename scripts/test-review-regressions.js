@@ -44,11 +44,8 @@ assert.match(settings, /if \(provider === "custom"\) return;/, "Custom Endpoint 
 const customApply = section(settings, "const applyCustomEndpoint", "const activeConfig");
 assert.match(customApply, /setProviderConfig\(/, "Apply Custom Endpoint must be the explicit runtime commit point");
 const customApiKeyChange = section(settings, "const handleApiKeyChange", "const handleDiscoverModels");
-assert.match(
-  customApiKeyChange,
-  /if \(!isCustom\) clearProviderConfig\(\);/,
-  "Non-custom credential edits should still invalidate the active provider",
-);
+assert.match(customApiKeyChange, /if \(!isCustom\) \{/, "Non-custom credential edits must invalidate the active provider");
+assert.match(customApiKeyChange, /clearProviderConfig\(\);/, "Non-custom credential edits must clear the active provider");
 for (const setter of ["setApiType", "setCustomBaseUrl", "setModel"]) {
   assert.equal(
     new RegExp(`clearProviderConfig\\(\\);\\s*${setter}\\(`).test(settings),
@@ -99,6 +96,16 @@ assert.match(
   /const startupConfig = pendingConfigRef\.current \?\? \(isConfigReady\(saved\) \? saved : null\)/,
   "The newest pre-ready Settings config must win over stale persisted config",
 );
+assert.match(
+  settings,
+  /const forgetPersistedConfigBeforeSessionRestore[\s\S]*if \(!state\.currentSession\) clearSavedConfig\("byok"\)/,
+  "Pre-ready provider/credential invalidation must prevent stale persisted config from reactivating",
+);
+const providerChange = section(settings, "const handleProviderChange", "const handleAuthMethodChange");
+assert.match(providerChange, /forgetPersistedConfigBeforeSessionRestore\(\)/, "Provider edits before restore must block stale config");
+const authChange = section(settings, "const handleAuthMethodChange", "const startOAuthLogin");
+assert.match(authChange, /forgetPersistedConfigBeforeSessionRestore\(\)/, "Auth-method edits before restore must block stale config");
+assert.match(customApiKeyChange, /forgetPersistedConfigBeforeSessionRestore\(\)/, "API-key edits before restore must block stale config");
 const newSessionSection = section(chat, "const newSession", "const switchSession");
 assert.ok(
   newSessionSection.indexOf("createSession(") < newSessionSection.indexOf("agentRef.current?.reset()"),
