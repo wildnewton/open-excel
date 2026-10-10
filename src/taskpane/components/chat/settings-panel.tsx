@@ -273,7 +273,7 @@ function ByokSettingsPanel() {
   };
 
   const handleApiKeyChange = (newApiKey: string) => {
-    clearProviderConfig();
+    if (!isCustom) clearProviderConfig();
     setApiKey(newApiKey);
     if (!isCustom) invalidateDiscovery();
   };
@@ -362,13 +362,11 @@ function ByokSettingsPanel() {
 
   const toggleProxy = () => {
     cancelDiscovery();
-    if (isCustom) clearProviderConfig();
     setUseProxy((current) => !current);
   };
 
   const changeProxyUrl = (value: string) => {
     cancelDiscovery();
-    if (isCustom) clearProviderConfig();
     setProxyUrl(value);
   };
 
@@ -405,10 +403,7 @@ function ByokSettingsPanel() {
                 <span className="block text-xs text-(--chat-text-secondary) mb-1.5">API Type</span>
                 <select
                   value={apiType}
-                  onChange={(e) => {
-                    clearProviderConfig();
-                    setApiType(e.target.value);
-                  }}
+                  onChange={(e) => setApiType(e.target.value)}
                   className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) focus:outline-none focus:border-(--chat-border-active)"
                   style={inputStyle}
                 >
@@ -428,10 +423,7 @@ function ByokSettingsPanel() {
                 <input
                   type="text"
                   value={customBaseUrl}
-                  onChange={(e) => {
-                    clearProviderConfig();
-                    setCustomBaseUrl(e.target.value);
-                  }}
+                  onChange={(e) => setCustomBaseUrl(e.target.value)}
                   placeholder="https://api.openai.com/v1"
                   className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) placeholder:text-(--chat-text-muted) focus:outline-none focus:border-(--chat-border-active)"
                   style={inputStyle}
@@ -444,10 +436,7 @@ function ByokSettingsPanel() {
                 <input
                   type="text"
                   value={model}
-                  onChange={(e) => {
-                    clearProviderConfig();
-                    setModel(e.target.value);
-                  }}
+                  onChange={(e) => setModel(e.target.value)}
                   placeholder="gpt-4o"
                   className="w-full bg-(--chat-input-bg) text-(--chat-text-primary) text-sm px-3 py-2 border border-(--chat-border) placeholder:text-(--chat-text-muted) focus:outline-none focus:border-(--chat-border-active)"
                   style={inputStyle}
@@ -768,13 +757,7 @@ function ByokSettingsPanel() {
             </>
           )}
 
-          <ThinkingSelector
-            value={thinking}
-            onChange={(value) => {
-              if (isCustom) clearProviderConfig();
-              setThinking(value);
-            }}
-          />
+          <ThinkingSelector value={thinking} onChange={setThinking} />
 
           {isCustom && (
             <button
@@ -803,9 +786,11 @@ function ByokSettingsPanel() {
           ) : (
             <span className="text-(--chat-text-muted)">
               {isCustom
-                ? customReady
-                  ? "Custom Endpoint is not active yet — click Apply Custom Endpoint"
-                  : "Enter endpoint and model (API key is optional)"
+                ? activeConfig?.mode === "byok" && activeConfig.provider === "custom"
+                  ? "Custom Endpoint changes are pending — click Apply Custom Endpoint; the previously applied endpoint remains active"
+                  : customReady
+                    ? "Custom Endpoint is not active yet — click Apply Custom Endpoint"
+                    : "Enter endpoint and model (API key is optional)"
                 : "Authenticate, connect, and select a model"}
             </span>
           )}
