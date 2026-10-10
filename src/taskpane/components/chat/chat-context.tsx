@@ -396,7 +396,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const configRef = useRef<ProviderConfig | null>(null);
 
-  const getActiveApiKey = useCallback(async (config: ProviderConfig): Promise<string> => {
+  const getActiveApiKey = useCallback(async (config: ProviderConfig, signal?: AbortSignal): Promise<string> => {
     if (config.mode !== "byok" || config.authMethod !== "oauth") {
       return apiKeyForConfig(config);
     }
@@ -407,7 +407,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
     if (Date.now() < creds.expires) return creds.access;
 
-    const refreshed = await refreshOAuthToken(config.provider, creds.refresh, config.proxyUrl, config.useProxy);
+    const refreshed = await refreshOAuthToken(config.provider, creds.refresh, config.proxyUrl, config.useProxy, {
+      responseStartTimeoutSeconds: config.responseStartTimeoutSeconds,
+      signal,
+    });
     saveOAuthCredentials(config.provider, refreshed);
     return refreshed.access;
   }, []);
@@ -447,7 +450,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           const isCustomEndpoint = cfg.mode === "byok" && cfg.provider === "custom";
           const customWithoutAuth = isCustomEndpoint && !cfg.apiKey.trim();
           const omitAuthentication = cfg.mode === "gateway" || customWithoutAuth;
-          let apiKey = await getActiveApiKey(cfg);
+          let apiKey = await getActiveApiKey(cfg, options?.signal);
 
           if (customWithoutAuth) {
             apiKey = "openexcel-custom-no-auth";
@@ -516,7 +519,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const clearProviderConfig = useCallback(() => {
     if (agentRef.current) {
       restoredAgentMessagesRef.current = [...agentRef.current.state.messages];
-      agentRef.current.abort();
     }
     configRef.current = null;
     pendingConfigRef.current = null;
