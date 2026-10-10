@@ -111,7 +111,11 @@ export function createCorsProxyFetch(
     }
 
     const route = resolveProxyRoute(targetUrl, options, behavior);
-    const routeKind = route.builtInBridge ? "local-bridge" : options.useProxy && options.proxyUrl.trim() ? "external-proxy" : "direct";
+    const routeKind = route.builtInBridge
+      ? "local-bridge"
+      : options.useProxy && options.proxyUrl.trim()
+        ? "external-proxy"
+        : "direct";
 
     if (route.builtInBridge && behavior.customEndpoint) {
       headers.set(CUSTOM_ENDPOINT_HEADER, "1");
