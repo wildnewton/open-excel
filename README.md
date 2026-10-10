@@ -167,7 +167,7 @@ Existing provider authentication behavior is otherwise unchanged.
 
 The gateway build removes provider selection, provider credentials, and provider proxy configuration from the add-in. The Settings tab contains:
 
-1. **Gateway URL** - User-editable OpenAI-compatible gateway endpoint using either HTTP or HTTPS.
+1. **Gateway URL** - User-editable OpenAI-compatible gateway endpoint.
 2. **Connect / Refresh Models** - Calls the gateway model endpoint.
 3. **Model** - Shows the real model names returned by the gateway.
 
@@ -180,7 +180,14 @@ POST /v1/chat/completions
 
 `/v1/chat/completions` must support streaming and OpenAI-compatible tool/function calling so the existing Excel agent loop can continue executing spreadsheet tools.
 
-Gateway mode intentionally connects directly from the Office taskpane rather than using the BYOK/local CORS proxy. HTTP and HTTPS Gateway URLs are accepted, but the gateway must permit CORS from the add-in origin and an HTTP endpoint can still be blocked by the Office WebView/browser mixed-content policy when the taskpane itself is HTTPS. The add-in does not send a provider API key or plugin-generated `Authorization` header in gateway mode; enterprise identity, authorization, provider credentials, routing, quotas, and the model catalog remain gateway responsibilities.
+Gateway transport follows one rule for both model discovery and chat traffic:
+
+- `https://...` Gateway URLs connect directly from the Office taskpane and therefore require CORS from the add-in origin.
+- `http://...` Gateway URLs are never fetched directly by the HTTPS WebView. In local/sideload development they are routed through OpenExcel's same-origin local bridge, which can reach HTTP/private/LAN targets without mixed-content blocking.
+
+The current bridge is provided by the local webpack development server (`https://localhost:3000`). A deployed/static Gateway build does not currently ship a standalone bridge service, so deployed Gateway URLs should use HTTPS unless the deployment provides an equivalent same-origin bridge endpoint.
+
+The add-in does not send a provider API key or plugin-generated `Authorization` header in gateway mode; enterprise identity, authorization, provider credentials, routing, quotas, and the model catalog remain gateway responsibilities.
 
 ### Persistence
 
