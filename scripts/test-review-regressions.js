@@ -38,6 +38,34 @@ assert.equal(
   false,
   "Editing Custom Endpoint response-start timeout must not abort the active request",
 );
+assert.match(settings, /if \(provider === "custom"\) return;/, "Custom Endpoint drafts must not auto-apply");
+const customApply = section(settings, "const applyCustomEndpoint", "const activeConfig");
+assert.match(customApply, /setProviderConfig\(config\);/, "Apply Custom Endpoint must be the explicit runtime commit point");
+const customApiKeyChange = section(settings, "const handleApiKeyChange", "const handleDiscoverModels");
+assert.match(
+  customApiKeyChange,
+  /if \(!isCustom\) clearProviderConfig\(\);/,
+  "Non-custom credential edits should still invalidate the active provider",
+);
+for (const setter of ["setApiType", "setCustomBaseUrl", "setModel", "setApiKey"]) {
+  assert.equal(
+    new RegExp(`clearProviderConfig\\(\\);\\s*${setter}\\(`).test(settings),
+    false,
+    `${setter} must remain draft-only for Custom Endpoint edits`,
+  );
+}
+const customProxyDraft = section(settings, "const toggleProxy", "return (");
+assert.equal(customProxyDraft.includes("clearProviderConfig"), false, "Custom Endpoint proxy edits must remain draft-only");
+assert.equal(
+  settings.includes("if (isCustom) clearProviderConfig();"),
+  false,
+  "Custom Endpoint field edits must never clear the applied runtime config",
+);
+assert.match(
+  settings,
+  /<ThinkingSelector value=\{thinking\} onChange=\{setThinking\} \/>/,
+  "Custom Endpoint thinking edits must remain draft-only",
+);
 
 const abortSection = section(chat, "const abort", "const sendMessage");
 assert.equal(abortSection.includes("isStreamingRef.current = false"), false, "Abort must wait for agent_end");
