@@ -91,8 +91,7 @@ async function resolvesToPrivateNetwork(hostname) {
   }
 }
 
-function isTrustedCustomEndpointRequest(request) {
-  if (request.headers[CUSTOM_ENDPOINT_HEADER] !== "1") return false;
+function isTrustedTaskpaneRequest(request) {
   const host = String(request.headers.host || "").toLowerCase();
   if (!(host.startsWith("localhost:") || host.startsWith("127.0.0.1:") || host === "localhost" || host === "127.0.0.1")) {
     return false;
@@ -105,6 +104,10 @@ function isTrustedCustomEndpointRequest(request) {
   if (request.headers.origin === expectedOrigin) return true;
   const referer = String(request.headers.referer || "");
   return referer.startsWith(`${expectedOrigin}/`);
+}
+
+function isTrustedCustomEndpointRequest(request) {
+  return request.headers[CUSTOM_ENDPOINT_HEADER] === "1" && isTrustedTaskpaneRequest(request);
 }
 
 function parseMacSystemProxy() {
@@ -207,6 +210,11 @@ function createLocalCorsBridgeMiddleware() {
       }
 
       if (requestUrl.pathname !== BRIDGE_PATH) return next();
+      if (!isTrustedTaskpaneRequest(request)) {
+        response.statusCode = 403;
+        response.end("Local CORS bridge only accepts requests from the OpenExcel taskpane");
+        return;
+      }
 
       const startedAt = Date.now();
       const traceId = getTraceId(request);
@@ -305,6 +313,7 @@ function createLocalCorsBridgeMiddleware() {
           response.statusCode = upstreamResponse.statusCode || 502;
           if (upstreamResponse.statusMessage) response.statusMessage = upstreamResponse.statusMessage;
           copyResponseHeaders(upstreamResponse, response, route);
+          response.flushHeaders();
 
           upstreamResponse.once("data", (chunk) => {
             traceLog(traceId, startedAt, "bridge.upstream-first-byte", `bytes=${chunk.length}`);
@@ -428,5 +437,6 @@ module.exports = {
   parseUpstreamHeaderTimeoutMs,
   isPrivateIpv4,
   isPrivateIpv6,
+  isTrustedTaskpaneRequest,
   isTrustedCustomEndpointRequest,
 };
