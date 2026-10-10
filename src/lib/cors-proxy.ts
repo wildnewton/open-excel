@@ -133,7 +133,7 @@ export function createCorsProxyFetch(
 
     const method = request.method.toUpperCase();
     const body = method === "GET" || method === "HEAD" ? undefined : await request.clone().arrayBuffer();
-    debugTrace(trace, "client.body-ready");
+    debugTrace(trace, "client.body-ready", { bytes: body?.byteLength ?? 0 });
 
     try {
       debugTrace(trace, "client.fetch-start");
