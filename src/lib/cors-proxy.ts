@@ -1,3 +1,4 @@
+import { createDebugTrace, DEBUG_TRACE_HEADER, debugTrace } from "./debug-trace";
 import { fetchWithResponseStartTimeout, normalizeResponseStartTimeoutSeconds } from "./request-timeout";
 
 export interface CorsProxyOptions {
@@ -87,6 +88,7 @@ export function createCorsProxyFetch(
   behavior: CorsProxyFetchBehavior = {},
 ): typeof globalThis.fetch {
   const proxyFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const trace = createDebugTrace();
     const request = new Request(input, init);
     let targetUrl = inputUrl(request);
     const headers = new Headers(request.headers);
@@ -109,30 +111,56 @@ export function createCorsProxyFetch(
     }
 
     const route = resolveProxyRoute(targetUrl, options, behavior);
+    const routeKind = route.builtInBridge ? "local-bridge" : options.useProxy && options.proxyUrl.trim() ? "external-proxy" : "direct";
+
     if (route.builtInBridge && behavior.customEndpoint) {
       headers.set(CUSTOM_ENDPOINT_HEADER, "1");
     }
+    // The trace ID is sent only to OpenExcel's same-origin local bridge. It is
+    // explicitly stripped there and is never forwarded to the configured endpoint.
+    if (route.builtInBridge && trace) {
+      headers.set(DEBUG_TRACE_HEADER, trace.id);
+    }
+
+    debugTrace(trace, "client.request-prepared", {
+      method: request.method,
+      route: routeKind,
+    });
 
     const method = request.method.toUpperCase();
     const body = method === "GET" || method === "HEAD" ? undefined : await request.clone().arrayBuffer();
+    debugTrace(trace, "client.body-ready");
 
-    return fetchWithResponseStartTimeout(
-      route.url,
-      {
-        method: request.method,
-        headers,
-        body,
-        cache: request.cache,
-        credentials: request.credentials,
-        integrity: request.integrity,
-        keepalive: request.keepalive,
-        mode: route.builtInBridge ? "same-origin" : request.mode,
-        redirect: request.redirect,
-        referrerPolicy: request.referrerPolicy,
-        signal: request.signal,
-      },
-      options.responseStartTimeoutSeconds,
-    );
+    try {
+      debugTrace(trace, "client.fetch-start");
+      const response = await fetchWithResponseStartTimeout(
+        route.url,
+        {
+          method: request.method,
+          headers,
+          body,
+          cache: request.cache,
+          credentials: request.credentials,
+          integrity: request.integrity,
+          keepalive: request.keepalive,
+          mode: route.builtInBridge ? "same-origin" : request.mode,
+          redirect: request.redirect,
+          referrerPolicy: request.referrerPolicy,
+          signal: request.signal,
+        },
+        options.responseStartTimeoutSeconds,
+      );
+      debugTrace(trace, "client.response-headers", {
+        status: response.status,
+        contentType: response.headers.get("content-type") ?? "",
+      });
+      return response;
+    } catch (error) {
+      debugTrace(trace, "client.fetch-error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   };
 
   return proxyFetch as typeof globalThis.fetch;
