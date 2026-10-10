@@ -179,7 +179,11 @@ async function refreshAnthropicOAuth(
   useProxy: boolean,
   options: OAuthRefreshOptions,
 ): Promise<OAuthCredentials> {
-  const response = await refreshFetch(useProxy, proxyUrl, options.responseStartTimeoutSeconds)(ANTHROPIC_TOKEN_URL, {
+  const response = await refreshFetch(
+    useProxy,
+    proxyUrl,
+    options.responseStartTimeoutSeconds,
+  )(ANTHROPIC_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -204,7 +208,11 @@ async function refreshOpenAICodexOAuth(
   useProxy: boolean,
   options: OAuthRefreshOptions,
 ): Promise<OAuthCredentials> {
-  const response = await refreshFetch(useProxy, proxyUrl, options.responseStartTimeoutSeconds)(OPENAI_CODEX_TOKEN_URL, {
+  const response = await refreshFetch(
+    useProxy,
+    proxyUrl,
+    options.responseStartTimeoutSeconds,
+  )(OPENAI_CODEX_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
