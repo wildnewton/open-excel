@@ -1,9 +1,14 @@
-import { buildCorsProxyUrl } from "../cors-proxy";
+import { buildCorsProxyUrl, createCorsProxyFetch } from "../cors-proxy";
 
 export interface OAuthCredentials {
   refresh: string;
   access: string;
   expires: number;
+}
+
+export interface OAuthRefreshOptions {
+  responseStartTimeoutSeconds?: number;
+  signal?: AbortSignal;
 }
 
 export type OAuthFlowState =
@@ -164,13 +169,17 @@ function buildProxiedUrl(baseUrl: string, useProxy: boolean, proxyUrl: string): 
 
 // --- Token Refresh ---
 
+function refreshFetch(useProxy: boolean, proxyUrl: string, responseStartTimeoutSeconds?: number) {
+  return createCorsProxyFetch({ useProxy, proxyUrl, responseStartTimeoutSeconds });
+}
+
 async function refreshAnthropicOAuth(
   refreshToken: string,
   proxyUrl: string,
   useProxy: boolean,
+  options: OAuthRefreshOptions,
 ): Promise<OAuthCredentials> {
-  const url = buildProxiedUrl(ANTHROPIC_TOKEN_URL, useProxy, proxyUrl);
-  const response = await fetch(url, {
+  const response = await refreshFetch(useProxy, proxyUrl, options.responseStartTimeoutSeconds)(ANTHROPIC_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -178,6 +187,7 @@ async function refreshAnthropicOAuth(
       client_id: ANTHROPIC_CLIENT_ID,
       refresh_token: refreshToken,
     }),
+    signal: options.signal,
   });
   if (!response.ok) throw new Error(`Anthropic token refresh failed: ${response.status}`);
   const data = (await response.json()) as { access_token: string; refresh_token: string; expires_in: number };
@@ -192,9 +202,9 @@ async function refreshOpenAICodexOAuth(
   refreshToken: string,
   proxyUrl: string,
   useProxy: boolean,
+  options: OAuthRefreshOptions,
 ): Promise<OAuthCredentials> {
-  const url = buildProxiedUrl(OPENAI_CODEX_TOKEN_URL, useProxy, proxyUrl);
-  const response = await fetch(url, {
+  const response = await refreshFetch(useProxy, proxyUrl, options.responseStartTimeoutSeconds)(OPENAI_CODEX_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -202,6 +212,7 @@ async function refreshOpenAICodexOAuth(
       refresh_token: refreshToken,
       client_id: OPENAI_CODEX_CLIENT_ID,
     }),
+    signal: options.signal,
   });
   if (!response.ok) throw new Error(`OpenAI Codex token refresh failed: ${response.status}`);
   const data = (await response.json()) as { access_token?: string; refresh_token?: string; expires_in?: number };
@@ -220,11 +231,12 @@ export async function refreshOAuthToken(
   refreshToken: string,
   proxyUrl: string,
   useProxy: boolean,
+  options: OAuthRefreshOptions = {},
 ): Promise<OAuthCredentials> {
   if (provider === "openai-codex") {
-    return refreshOpenAICodexOAuth(refreshToken, proxyUrl, useProxy);
+    return refreshOpenAICodexOAuth(refreshToken, proxyUrl, useProxy, options);
   }
-  return refreshAnthropicOAuth(refreshToken, proxyUrl, useProxy);
+  return refreshAnthropicOAuth(refreshToken, proxyUrl, useProxy, options);
 }
 
 // --- Token Exchange ---
