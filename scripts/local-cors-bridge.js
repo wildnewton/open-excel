@@ -351,6 +351,10 @@ function createLocalCorsBridgeMiddleware() {
         });
       });
 
+      upstreamRequest.on("finish", () => {
+        traceLog(traceId, startedAt, "bridge.upstream-request-finish");
+      });
+
       headerTimer = setTimeout(() => {
         traceLog(traceId, startedAt, "bridge.upstream-header-timeout", `limit=${upstreamHeaderTimeoutMs}ms`);
         const timeoutError = new Error(`Timed out waiting for upstream response headers after ${upstreamHeaderTimeoutMs}ms`);
@@ -393,6 +397,16 @@ function createLocalCorsBridgeMiddleware() {
           upstreamRequest.destroy();
         }
       });
+
+      if (traceId) {
+        let clientBodyBytes = 0;
+        request.on("data", (chunk) => {
+          clientBodyBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+        });
+        request.on("end", () => {
+          traceLog(traceId, startedAt, "bridge.client-body-end", `bytes=${clientBodyBytes}`);
+        });
+      }
 
       request.pipe(upstreamRequest);
     };
