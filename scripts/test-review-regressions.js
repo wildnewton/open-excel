@@ -27,6 +27,13 @@ assert.match(chat, /saveConfig\(config\);/, "Only applied runtime config should 
 const clearProvider = section(chat, "const clearProviderConfig", "const abort");
 assert.equal(clearProvider.includes("agentRef.current = null"), false, "Invalidating config must not discard transcript");
 assert.equal(clearProvider.includes("isStreamingRef.current = false"), false, "Invalidating config must not fake Agent idle");
+assert.equal(
+  settings.includes(
+    'cancelDiscovery();\n                if (isCustom) clearProviderConfig();\n                setResponseStartTimeoutSeconds',
+  ),
+  false,
+  "Editing Custom Endpoint response-start timeout must not abort the active request",
+);
 
 const abortSection = section(chat, "const abort", "const sendMessage");
 assert.equal(abortSection.includes("isStreamingRef.current = false"), false, "Abort must wait for agent_end");
