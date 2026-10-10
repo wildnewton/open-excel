@@ -80,7 +80,9 @@ function resolveProxyRoute(
   // when that bridge is unavailable.
   if (behavior.gatewayEndpoint && isHttpUrl(targetUrl)) {
     if (!isLocalDevelopmentHost()) {
-      throw new Error("HTTP Gateway URLs require the OpenExcel local bridge. Use the localhost/sideload development host or HTTPS for deployed builds.");
+      throw new Error(
+        "HTTP Gateway URLs require the OpenExcel local bridge. Use the localhost/sideload development host or HTTPS for deployed builds.",
+      );
     }
     return { url: localBridgeUrl(targetUrl, options.responseStartTimeoutSeconds), builtInBridge: true };
   }
